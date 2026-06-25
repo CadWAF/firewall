@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: go.sum
+
+      - name: Install BPF build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev "linux-headers-$(uname -r)"
+
+      - name: Build binaries
+        run: |
+          make generate
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} go build -buildvcs=false -o bin/firewalld ./cmd/firewalld
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} go build -buildvcs=false -o bin/firewallctl ./cmd/firewallctl
+
+      - name: Package release tarball
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARCH="${{ matrix.goarch }}"
+          PKG="waf-firewall-${VERSION}-linux-${ARCH}"
+          mkdir -p "${PKG}/configs" "${PKG}/docs"
+          cp bin/firewalld bin/firewallctl "${PKG}/"
+          cp configs/*.example "${PKG}/configs/"
+          cp configs/firewalld.service "${PKG}/configs/"
+          cp docs/API.md "${PKG}/docs/"
+          tar czf "${PKG}.tar.gz" "${PKG}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tarball-linux-${{ matrix.goarch }}
+          path: waf-firewall-*.tar.gz
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: artifacts/*.tar.gz
+          body: |
+            ## Install
+
+            ```bash
+            tar xzf waf-firewall-*-linux-amd64.tar.gz
+            cd waf-firewall-*
+            sudo cp firewalld firewallctl /usr/local/bin/
+            sudo cp configs/* /etc/firewall/
+            ```
+
+            Or use `sudo ./scripts/setup-firewall.sh` from a git checkout.
