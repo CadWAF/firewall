@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 
@@ -14,6 +16,10 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		delegateToCLI()
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config: %v", err)
@@ -40,4 +46,16 @@ func main() {
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
 	log.Println("shutting down")
+}
+
+func delegateToCLI() {
+	cli, err := exec.LookPath("firewallctl")
+	if err != nil {
+		cli = "/usr/local/bin/firewallctl"
+	}
+	args := append([]string{"firewallctl"}, os.Args[1:]...)
+	if err := syscall.Exec(cli, args, os.Environ()); err != nil {
+		fmt.Fprintf(os.Stderr, "firewalld is the daemon; run: firewallctl %s\n", os.Args[1])
+		os.Exit(1)
+	}
 }

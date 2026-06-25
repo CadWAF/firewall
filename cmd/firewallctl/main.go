@@ -31,11 +31,16 @@ func main() {
 	case "unblock", "del-block", "remove-block", "undeny":
 		runErr = needArg(runUnblock, cfg, os.Args[2:])
 	case "activate", "start", "on":
-		runErr = ctl.Activate()
+		runErr = ctl.Activate(cfg)
 	case "deactivate", "stop", "off":
 		runErr = ctl.Deactivate(cfg)
 	case "reactivate", "restart":
 		runErr = ctl.Reactivate(cfg)
+	case "reload":
+		runErr = ctl.Reload(cfg)
+		if runErr == nil {
+			fmt.Println("policy reloaded")
+		}
 	case "hooks-off":
 		runErr = ctl.HooksOff(cfg)
 	case "ls", "list":
@@ -159,6 +164,7 @@ Service control:
   activate                Start firewalld (enable filtering)
   deactivate              Stop firewalld and detach XDP/TC hooks
   reactivate              Deactivate then activate
+  reload                  Reload policy from config files (no restart)
   hooks-off               Detach XDP/TC hooks only (used by systemd)
 
 Other:

@@ -48,7 +48,17 @@ func UnblockIP(cfg *config.Config, ip string) error {
 	return reloadIfRunning(cfg)
 }
 
-func Activate() error {
+func Activate(cfg *config.Config) error {
+	active, err := isServiceActive()
+	if err != nil {
+		return err
+	}
+	if active {
+		return nil
+	}
+	if err := HooksOff(cfg); err != nil {
+		return err
+	}
 	return runSystemctl("start")
 }
 
@@ -63,7 +73,18 @@ func Reactivate(cfg *config.Config) error {
 	if err := Deactivate(cfg); err != nil {
 		return err
 	}
-	return Activate()
+	return Activate(cfg)
+}
+
+func Reload(cfg *config.Config) error {
+	active, err := isServiceActive()
+	if err != nil {
+		return err
+	}
+	if !active {
+		return fmt.Errorf("firewalld is not running")
+	}
+	return reloadIfRunning(cfg)
 }
 
 func HooksOff(cfg *config.Config) error {

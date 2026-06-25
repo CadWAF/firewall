@@ -189,10 +189,9 @@ func compileRules(entries []parser.Entry) []bpf.FirewallFwRule {
 			if v4 := e.IP.To4(); v4 != nil {
 				r.IpVersion = 4
 				r.IpPrefixlen = uint8(e.PrefixLen)
-				r.Ipv4Addr = binary.BigEndian.Uint32(v4)
+				r.Ipv4Addr = ip4BPFKey(v4)
 				if e.PrefixLen < 32 {
-					mask := ^uint32((1 << (32 - e.PrefixLen)) - 1)
-					r.Ipv4Addr &= mask
+					r.Ipv4Addr &= ip4BPFMask(e.PrefixLen)
 				}
 			} else {
 				r.IpVersion = 6
@@ -216,7 +215,7 @@ func putLPMIP(v4, v6 *ebpf.Map, cidr string) error {
 			return fmt.Errorf("invalid IP %q", cidr)
 		}
 		if ip4 := ip.To4(); ip4 != nil {
-			key := bpf.FirewallLpmKeyV4{Prefixlen: 32, Addr: binary.BigEndian.Uint32(ip4)}
+			key := bpf.FirewallLpmKeyV4{Prefixlen: 32, Addr: ip4BPFKey(ip4)}
 			return v4.Put(key, uint8(1))
 		}
 		key := bpf.FirewallLpmKeyV6{Prefixlen: 128}
@@ -225,10 +224,9 @@ func putLPMIP(v4, v6 *ebpf.Map, cidr string) error {
 	}
 	ones, _ := network.Mask.Size()
 	if v4ip := ip.To4(); v4ip != nil {
-		addr := binary.BigEndian.Uint32(v4ip)
+		addr := ip4BPFKey(v4ip)
 		if ones < 32 {
-			mask := ^uint32((1 << (32 - ones)) - 1)
-			addr &= mask
+			addr &= ip4BPFMask(ones)
 		}
 		key := bpf.FirewallLpmKeyV4{Prefixlen: uint32(ones), Addr: addr}
 		return v4.Put(key, uint8(1))
@@ -236,6 +234,24 @@ func putLPMIP(v4, v6 *ebpf.Map, cidr string) error {
 	key := bpf.FirewallLpmKeyV6{Prefixlen: uint32(ones)}
 	copy(key.Addr[:], ip.To16())
 	return v6.Put(key, uint8(1))
+}
+
+// ip4BPFKey encodes an IPv4 address the same way iphdr->saddr appears in BPF
+// (wire-order bytes stored in a native-endian u32).
+func ip4BPFKey(ip net.IP) uint32 {
+	b := ip.To4()
+	return binary.NativeEndian.Uint32(b)
+}
+
+// ip4BPFMask matches bpf_htonl(~((1<<(32-ones))-1)) applied in the BPF programs.
+func ip4BPFMask(ones int) uint32 {
+	if ones >= 32 {
+		return ^uint32(0)
+	}
+	maskBE := ^uint32((1 << (32 - ones)) - 1)
+	var be [4]byte
+	binary.BigEndian.PutUint32(be[:], maskBE)
+	return binary.NativeEndian.Uint32(be[:])
 }
 
 func clearLPMv4(m *ebpf.Map) error {

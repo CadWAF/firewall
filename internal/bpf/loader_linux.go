@@ -49,6 +49,9 @@ func (f *Firewall) Objects() *FirewallObjects { return f.objs }
 func (f *Firewall) Iface() string             { return f.iface }
 
 func (f *Firewall) Attach() error {
+	// Orphaned XDP/TC from a crashed or partial stop would cause EBUSY.
+	_ = DetachInterface(f.iface)
+
 	iface, err := net.InterfaceByName(f.iface)
 	if err != nil {
 		return fmt.Errorf("interface %s: %w", f.iface, err)

@@ -12,8 +12,8 @@ generate:
 	go generate ./$(INTERNAL_BPF)/...
 
 build: generate
-	CGO_ENABLED=0 GOOS=linux GOARCH=$(shell go env GOARCH) go build -o bin/firewalld ./cmd/firewalld
-	CGO_ENABLED=0 GOOS=linux GOARCH=$(shell go env GOARCH) go build -o bin/firewallctl ./cmd/firewallctl
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(shell go env GOARCH) go build -buildvcs=false -o bin/firewalld ./cmd/firewalld
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(shell go env GOARCH) go build -buildvcs=false -o bin/firewallctl ./cmd/firewallctl
 
 install: build
 	install -d /usr/local/bin /etc/firewall /lib/systemd/system
