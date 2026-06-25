@@ -1,0 +1,10 @@
+# Ports other servers may connect TO on this host (inbound allow)
+tcp_in = 22,80,443,8080
+udp_in = 53
+
+# Ports this host's services may connect TO on remote servers (outbound allow)
+tcp_out = 80,443,3306,53
+udp_out = 53,123
+
+# Always allow loopback traffic
+allow_localhost = true

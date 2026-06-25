@@ -1,0 +1,9 @@
+# Whitelisted IPs bypass all firewall rules.
+# One IP or CIDR per line, or complex CSF-format rules.
+
+127.0.0.1
+::1
+
+# Complex rule examples (uncomment to enable):
+# tcp|in|d=80|s=203.0.113.5
+# tcp|out|d=3306|u=33

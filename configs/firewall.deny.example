@@ -1,0 +1,5 @@
+# Blocked IPs are always dropped (after whitelist check).
+# One IP or CIDR per line, or complex CSF-format rules.
+
+# 198.51.100.99
+# tcp|in|d=22|s=203.0.113.0/24
