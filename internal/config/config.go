@@ -107,11 +107,11 @@ func (c *Config) DenyPath() string   { return filepath.Join(c.ConfigDir, "firewa
 func (c *Config) PortsPath() string  { return filepath.Join(c.ConfigDir, "ports.conf") }
 
 type PortsConfig struct {
-	TCPIn           []uint16
-	UDPIn           []uint16
-	TCPOut          []uint16
-	UDPOut          []uint16
-	AllowLocalhost  bool
+	TCPIn          []uint16
+	UDPIn          []uint16
+	TCPOut         []uint16
+	UDPOut         []uint16
+	AllowLocalhost bool
 }
 
 func LoadPorts(path string) (*PortsConfig, error) {
@@ -156,11 +156,11 @@ func LoadPorts(path string) (*PortsConfig, error) {
 func SavePorts(path string, pc *PortsConfig) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Ports other servers may connect TO on this host (inbound allow)\n")
-	fmt.Fprintf(&b, "tcp_in = %s\n", formatPortList(pc.TCPIn))
-	fmt.Fprintf(&b, "udp_in = %s\n", formatPortList(pc.UDPIn))
+	fmt.Fprintf(&b, "tcp_in = %s\n", FormatPortList(pc.TCPIn))
+	fmt.Fprintf(&b, "udp_in = %s\n", FormatPortList(pc.UDPIn))
 	fmt.Fprintf(&b, "\n# Ports this host's services may connect TO on remote servers (outbound allow)\n")
-	fmt.Fprintf(&b, "tcp_out = %s\n", formatPortList(pc.TCPOut))
-	fmt.Fprintf(&b, "udp_out = %s\n", formatPortList(pc.UDPOut))
+	fmt.Fprintf(&b, "tcp_out = %s\n", FormatPortList(pc.TCPOut))
+	fmt.Fprintf(&b, "udp_out = %s\n", FormatPortList(pc.UDPOut))
 	fmt.Fprintf(&b, "\n# Always allow loopback traffic\n")
 	fmt.Fprintf(&b, "allow_localhost = %t\n", pc.AllowLocalhost)
 	return os.WriteFile(path, []byte(b.String()), 0644)
@@ -216,7 +216,7 @@ func expandPortRange(s string) ([]uint16, error) {
 	return ports, nil
 }
 
-func formatPortList(ports []uint16) string {
+func FormatPortList(ports []uint16) string {
 	if len(ports) == 0 {
 		return ""
 	}

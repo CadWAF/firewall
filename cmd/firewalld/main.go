@@ -43,9 +43,24 @@ func main() {
 	}()
 
 	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
-	log.Println("shutting down")
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+
+	for {
+		switch <-sig {
+		case syscall.SIGHUP:
+			if err := eng.Reload(); err != nil {
+				log.Printf("reload failed: %v", err)
+				continue
+			}
+			st := eng.State()
+			if st != nil {
+				log.Printf("policy reloaded: %s", st.Summary())
+			}
+		case syscall.SIGINT, syscall.SIGTERM:
+			log.Println("shutting down")
+			return
+		}
+	}
 }
 
 func delegateToCLI() {

@@ -2,51 +2,16 @@ package ctl
 
 import (
 	"fmt"
-	"net/http"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/huzenkon/waf-firewall/internal/config"
 	"github.com/huzenkon/waf-firewall/internal/hooks"
 	"github.com/huzenkon/waf-firewall/internal/parser"
+	"github.com/huzenkon/waf-firewall/internal/policy"
 )
 
 const serviceName = "firewalld"
-
-func AllowIP(cfg *config.Config, ip string) error {
-	if err := validateSimpleIP(ip); err != nil {
-		return err
-	}
-	if err := parser.AppendIPToFile(cfg.AllowPath(), ip); err != nil {
-		return err
-	}
-	return reloadIfRunning(cfg)
-}
-
-func BlockIP(cfg *config.Config, ip string) error {
-	if err := validateSimpleIP(ip); err != nil {
-		return err
-	}
-	if err := parser.AppendIPToFile(cfg.DenyPath(), ip); err != nil {
-		return err
-	}
-	return reloadIfRunning(cfg)
-}
-
-func UnallowIP(cfg *config.Config, ip string) error {
-	if err := parser.RemoveIPFromFile(cfg.AllowPath(), ip); err != nil {
-		return err
-	}
-	return reloadIfRunning(cfg)
-}
-
-func UnblockIP(cfg *config.Config, ip string) error {
-	if err := parser.RemoveIPFromFile(cfg.DenyPath(), ip); err != nil {
-		return err
-	}
-	return reloadIfRunning(cfg)
-}
 
 func Activate(cfg *config.Config) error {
 	active, err := isServiceActive()
@@ -57,6 +22,9 @@ func Activate(cfg *config.Config) error {
 		return nil
 	}
 	if err := HooksOff(cfg); err != nil {
+		return err
+	}
+	if err := ensureSSHSafety(cfg); err != nil {
 		return err
 	}
 	return runSystemctl("start")
@@ -76,17 +44,6 @@ func Reactivate(cfg *config.Config) error {
 	return Activate(cfg)
 }
 
-func Reload(cfg *config.Config) error {
-	active, err := isServiceActive()
-	if err != nil {
-		return err
-	}
-	if !active {
-		return fmt.Errorf("firewalld is not running")
-	}
-	return reloadIfRunning(cfg)
-}
-
 func HooksOff(cfg *config.Config) error {
 	iface, err := cfg.ResolveIface()
 	if err != nil {
@@ -95,32 +52,53 @@ func HooksOff(cfg *config.Config) error {
 	return hooks.Detach(iface)
 }
 
-func Status(cfg *config.Config) (string, error) {
+func Status(cfg *config.Config) (StatusInfo, error) {
 	active, _ := isServiceActive()
 	iface, err := cfg.ResolveIface()
 	if err != nil {
-		return "", err
+		return StatusInfo{}, err
 	}
 
-	var b strings.Builder
-	fmt.Fprintf(&b, "service: %s\n", serviceState(active))
-	fmt.Fprintf(&b, "interface: %s\n", iface)
-	if active {
-		fmt.Fprintf(&b, "api: http://%s\n", cfg.ListenAddr)
+	info := StatusInfo{
+		Service:   serviceState(active),
+		Interface: iface,
 	}
-	return b.String(), nil
+	if active {
+		info.API = "http://" + cfg.ListenAddr
+		c, _, _, err := currentCounts(cfg)
+		if err == nil {
+			info.Policy = c
+			info.PolicySource = "memory"
+		}
+	} else {
+		st, err := policy.LoadState(cfg.AllowPath(), cfg.DenyPath(), cfg.PortsPath())
+		if err == nil {
+			info.Policy = st.Counts()
+			info.PolicySource = "config"
+		}
+	}
+	return info, nil
 }
 
-func ListIPs(cfg *config.Config) (allow, block []string, err error) {
-	allow, err = listSimpleIPs(cfg.AllowPath())
+func ListIPs(cfg *config.Config, which string) (ListResult, error) {
+	allow, err := listSimpleIPs(cfg.AllowPath())
 	if err != nil {
-		return nil, nil, fmt.Errorf("firewall.allow: %w", err)
+		return ListResult{}, fmt.Errorf("firewall.allow: %w", err)
 	}
-	block, err = listSimpleIPs(cfg.DenyPath())
+	block, err := listSimpleIPs(cfg.DenyPath())
 	if err != nil {
-		return nil, nil, fmt.Errorf("firewall.deny: %w", err)
+		return ListResult{}, fmt.Errorf("firewall.deny: %w", err)
 	}
-	return allow, block, nil
+	switch which {
+	case "all", "":
+		return ListResult{Allow: allow, Block: block}, nil
+	case "allow", "whitelist", "white":
+		return ListResult{Allow: allow}, nil
+	case "block", "deny", "blacklist", "black":
+		return ListResult{Block: block}, nil
+	default:
+		return ListResult{}, fmt.Errorf("unknown list: %s (use allow or block)", which)
+	}
 }
 
 func listSimpleIPs(path string) ([]string, error) {
@@ -135,35 +113,6 @@ func listSimpleIPs(path string) ([]string, error) {
 		}
 	}
 	return ips, nil
-}
-
-func reloadIfRunning(cfg *config.Config) error {
-	active, err := isServiceActive()
-	if err != nil {
-		return err
-	}
-	if !active {
-		return nil
-	}
-	if cfg.APIKey == "" {
-		return fmt.Errorf("FIREWALL_API_TOKEN is required to reload a running daemon")
-	}
-	url := "http://" + cfg.ListenAddr + "/api/v1/reload"
-	req, err := http.NewRequest(http.MethodPost, url, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("reload request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("reload failed: HTTP %d", resp.StatusCode)
-	}
-	return nil
 }
 
 func validateSimpleIP(ip string) error {

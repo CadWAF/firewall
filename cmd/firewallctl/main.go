@@ -9,105 +9,78 @@ import (
 )
 
 func main() {
-	if len(os.Args) < 2 {
+	jsonOut, args := ctl.ParseArgs(os.Args[1:])
+	if len(args) < 1 {
 		usage()
 		os.Exit(2)
 	}
 
 	cfg, err := config.LoadCLI()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "config: %v\n", err)
-		os.Exit(1)
+		fail(jsonOut, err)
 	}
 
-	var runErr error
-	switch os.Args[1] {
+	cmd := args[0]
+	cmdArgs := args[1:]
+
+	var emitErr error
+	switch cmd {
 	case "allow":
-		runErr = needArg(runAllow, cfg, os.Args[2:])
+		emitErr = runIPChange(jsonOut, cfg, cmdArgs, ctl.AllowIP)
 	case "block", "deny":
-		runErr = needArg(runBlock, cfg, os.Args[2:])
+		emitErr = runIPChange(jsonOut, cfg, cmdArgs, ctl.BlockIP)
 	case "unallow", "del-allow", "remove-allow":
-		runErr = needArg(runUnallow, cfg, os.Args[2:])
+		emitErr = runIPChange(jsonOut, cfg, cmdArgs, ctl.UnallowIP)
 	case "unblock", "del-block", "remove-block", "undeny":
-		runErr = needArg(runUnblock, cfg, os.Args[2:])
+		emitErr = runIPChange(jsonOut, cfg, cmdArgs, ctl.UnblockIP)
 	case "activate", "start", "on":
-		runErr = ctl.Activate(cfg)
+		emitErr = runOK(jsonOut, ctl.Activate(cfg))
 	case "deactivate", "stop", "off":
-		runErr = ctl.Deactivate(cfg)
+		emitErr = runOK(jsonOut, ctl.Deactivate(cfg))
 	case "reactivate", "restart":
-		runErr = ctl.Reactivate(cfg)
+		emitErr = runOK(jsonOut, ctl.Reactivate(cfg))
 	case "reload":
-		runErr = ctl.Reload(cfg)
-		if runErr == nil {
-			fmt.Println("policy reloaded")
-		}
+		result, err := ctl.Reload(cfg)
+		emitErr = emitResult(jsonOut, result, err)
 	case "hooks-off":
-		runErr = ctl.HooksOff(cfg)
+		emitErr = runOK(jsonOut, ctl.HooksOff(cfg))
 	case "ls", "list":
-		runErr = runList(cfg, os.Args[2:])
+		emitErr = runList(jsonOut, cfg, cmdArgs)
 	case "status":
-		var out string
-		out, runErr = ctl.Status(cfg)
-		if runErr == nil {
-			fmt.Print(out)
-		}
+		info, err := ctl.Status(cfg)
+		emitErr = emitResult(jsonOut, info, err)
+	case "stat", "stats":
+		info, err := ctl.Stat(cfg)
+		emitErr = emitResult(jsonOut, info, err)
 	case "help", "-h", "--help":
 		usage()
 		return
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
-		usage()
+		if !jsonOut {
+			fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
+			usage()
+		} else {
+			_ = ctl.EmitStdout(true, map[string]string{"error": "unknown command: " + cmd})
+		}
 		os.Exit(2)
 	}
 
-	if runErr != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", runErr)
-		os.Exit(1)
+	if emitErr != nil {
+		fail(jsonOut, emitErr)
 	}
 }
 
-type ipFn func(*config.Config, string) error
+type ipChangeFn func(*config.Config, string) (ctl.IPChangeResult, error)
 
-func needArg(fn ipFn, cfg *config.Config, args []string) error {
+func runIPChange(jsonOut bool, cfg *config.Config, args []string, fn ipChangeFn) error {
 	if len(args) != 1 {
 		return fmt.Errorf("IP address required")
 	}
-	return fn(cfg, args[0])
+	result, err := fn(cfg, args[0])
+	return emitResult(jsonOut, result, err)
 }
 
-func runAllow(cfg *config.Config, ip string) error {
-	if err := ctl.AllowIP(cfg, ip); err != nil {
-		return err
-	}
-	fmt.Printf("allowed %s\n", ip)
-	return nil
-}
-
-func runBlock(cfg *config.Config, ip string) error {
-	if err := ctl.BlockIP(cfg, ip); err != nil {
-		return err
-	}
-	fmt.Printf("blocked %s\n", ip)
-	return nil
-}
-
-func runUnallow(cfg *config.Config, ip string) error {
-	if err := ctl.UnallowIP(cfg, ip); err != nil {
-		return err
-	}
-	fmt.Printf("removed %s from allow list\n", ip)
-	return nil
-}
-
-func runUnblock(cfg *config.Config, ip string) error {
-	if err := ctl.UnblockIP(cfg, ip); err != nil {
-		return err
-	}
-	fmt.Printf("removed %s from block list\n", ip)
-	return nil
-}
-
-func runList(cfg *config.Config, args []string) error {
+func runList(jsonOut bool, cfg *config.Config, args []string) error {
 	which := "all"
 	if len(args) > 0 {
 		which = args[0]
@@ -115,35 +88,31 @@ func runList(cfg *config.Config, args []string) error {
 	if len(args) > 1 {
 		return fmt.Errorf("usage: firewallctl ls [allow|block]")
 	}
+	result, err := ctl.ListIPs(cfg, which)
+	return emitResult(jsonOut, result, err)
+}
 
-	allow, block, err := ctl.ListIPs(cfg)
+func runOK(jsonOut bool, err error) error {
 	if err != nil {
 		return err
 	}
-
-	switch which {
-	case "all", "":
-		printIPList("allow", allow)
-		printIPList("block", block)
-	case "allow", "whitelist", "white":
-		printIPList("allow", allow)
-	case "block", "deny", "blacklist", "black":
-		printIPList("block", block)
-	default:
-		return fmt.Errorf("unknown list: %s (use allow or block)", which)
-	}
-	return nil
+	return ctl.EmitStdout(jsonOut, ctl.OKResult{OK: true})
 }
 
-func printIPList(name string, ips []string) {
-	fmt.Printf("[%s]\n", name)
-	if len(ips) == 0 {
-		fmt.Println("  (empty)")
-		return
+func emitResult(jsonOut bool, v any, err error) error {
+	if err != nil {
+		return err
 	}
-	for _, ip := range ips {
-		fmt.Printf("  %s\n", ip)
+	return ctl.EmitStdout(jsonOut, v)
+}
+
+func fail(jsonOut bool, err error) {
+	if jsonOut {
+		_ = ctl.Emit(true, os.Stderr, map[string]string{"error": err.Error()})
+	} else {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 	}
+	os.Exit(1)
 }
 
 func usage() {
@@ -151,7 +120,10 @@ func usage() {
 Alias: firewalldctl
 
 Usage:
-  firewallctl <command> [args]
+  firewallctl [--json] <command> [args]
+
+Global flags:
+  --json                  Output JSON instead of plain text
 
 IP management:
   allow <ip>              Add IP to whitelist (firewall.allow)
@@ -164,11 +136,12 @@ Service control:
   activate                Start firewalld (enable filtering)
   deactivate              Stop firewalld and detach XDP/TC hooks
   reactivate              Deactivate then activate
-  reload                  Reload policy from config files (no restart)
+  reload                  Apply firewall.allow, firewall.deny, ports.conf to BPF
   hooks-off               Detach XDP/TC hooks only (used by systemd)
 
 Other:
-  status                  Show service and interface status
+  status                  Show service and policy counts
+  stat                    Show packet pass/drop counters from memory
 
 Config: /etc/firewall/firewalld.env
 `)

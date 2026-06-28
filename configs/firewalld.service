@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/firewalld
+ExecReload=/bin/kill -HUP $MAINPID
 ExecStopPost=-/usr/local/bin/firewallctl hooks-off
 EnvironmentFile=-/etc/firewall/firewalld.env
 Restart=on-failure

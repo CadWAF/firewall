@@ -156,7 +156,46 @@ func ApplyMaps(objs *bpf.FirewallObjects, st *State) error {
 			return err
 		}
 	}
+	for i := count; i < parser.MaxRules; i++ {
+		_ = objs.Rules.Delete(uint32(i))
+	}
 	return nil
+}
+
+// Counts is a compact snapshot of the applied policy (counts only).
+type Counts struct {
+	Whitelist int `json:"whitelist"`
+	Blocklist int `json:"blocklist"`
+	Rules     int `json:"rules"`
+	TCPIn     int `json:"tcp_in"`
+	UDPIn     int `json:"udp_in"`
+	TCPOut    int `json:"tcp_out"`
+	UDPOut    int `json:"udp_out"`
+}
+
+func (st *State) Counts() Counts {
+	c := Counts{
+		Whitelist: len(st.Whitelist),
+		Blocklist: len(st.Blocklist),
+		Rules:     len(st.Rules),
+	}
+	if st.Ports != nil {
+		c.TCPIn = len(st.Ports.TCPIn)
+		c.UDPIn = len(st.Ports.UDPIn)
+		c.TCPOut = len(st.Ports.TCPOut)
+		c.UDPOut = len(st.Ports.UDPOut)
+	}
+	return c
+}
+
+func (c Counts) String() string {
+	return fmt.Sprintf("whitelist=%d blocklist=%d rules=%d tcp_in=%d udp_in=%d tcp_out=%d udp_out=%d",
+		c.Whitelist, c.Blocklist, c.Rules, c.TCPIn, c.UDPIn, c.TCPOut, c.UDPOut)
+}
+
+// Summary returns a short human-readable policy snapshot.
+func (st *State) Summary() string {
+	return st.Counts().String()
 }
 
 func compileRules(entries []parser.Entry) []bpf.FirewallFwRule {

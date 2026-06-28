@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -61,6 +62,9 @@ func New(cfg *config.Config) (*Engine, error) {
 }
 
 func (e *Engine) Reload() error {
+	if err := policy.EnsureActiveSSHClientsAllow(e.cfg.AllowPath()); err != nil {
+		return fmt.Errorf("ssh safety: %w", err)
+	}
 	st, err := policy.LoadState(e.cfg.AllowPath(), e.cfg.DenyPath(), e.cfg.PortsPath())
 	if err != nil {
 		return err
@@ -143,12 +147,22 @@ func (e *Engine) Stats() (bpf.Stats, error) {
 }
 
 func (e *Engine) Health() map[string]any {
-	return map[string]any{
+	m := map[string]any{
 		"status":    "ok",
 		"iface":     e.cfg.Iface,
 		"attached":  e.fw != nil,
 		"configDir": e.cfg.ConfigDir,
 	}
+	if st := e.State(); st != nil {
+		m["policy"] = st.Counts()
+	}
+	if s, err := e.Stats(); err == nil {
+		m["stats"] = map[string]any{
+			"xdp": map[string]uint64{"pass": s.XDPPass, "drop": s.XDPDrop},
+			"tc":  map[string]uint64{"pass": s.TCPass, "drop": s.TCDrop},
+		}
+	}
+	return m
 }
 
 func CopyExampleConfig(dst, example string) error {
