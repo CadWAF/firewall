@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/huzenkon/waf-firewall/internal/ports"
 )
 
 const Version = "0.1.0"
@@ -136,13 +138,13 @@ func LoadPorts(path string) (*PortsConfig, error) {
 		val := strings.TrimSpace(parts[1])
 		switch key {
 		case "tcp_in":
-			pc.TCPIn, err = parsePortList(val)
+			pc.TCPIn, err = ports.ParseList(val)
 		case "udp_in":
-			pc.UDPIn, err = parsePortList(val)
+			pc.UDPIn, err = ports.ParseList(val)
 		case "tcp_out":
-			pc.TCPOut, err = parsePortList(val)
+			pc.TCPOut, err = ports.ParseList(val)
 		case "udp_out":
-			pc.UDPOut, err = parsePortList(val)
+			pc.UDPOut, err = ports.ParseList(val)
 		case "allow_localhost":
 			pc.AllowLocalhost, err = strconv.ParseBool(val)
 		}
@@ -156,73 +158,12 @@ func LoadPorts(path string) (*PortsConfig, error) {
 func SavePorts(path string, pc *PortsConfig) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Ports other servers may connect TO on this host (inbound allow)\n")
-	fmt.Fprintf(&b, "tcp_in = %s\n", FormatPortList(pc.TCPIn))
-	fmt.Fprintf(&b, "udp_in = %s\n", FormatPortList(pc.UDPIn))
+	fmt.Fprintf(&b, "tcp_in = %s\n", ports.FormatList(pc.TCPIn))
+	fmt.Fprintf(&b, "udp_in = %s\n", ports.FormatList(pc.UDPIn))
 	fmt.Fprintf(&b, "\n# Ports this host's services may connect TO on remote servers (outbound allow)\n")
-	fmt.Fprintf(&b, "tcp_out = %s\n", FormatPortList(pc.TCPOut))
-	fmt.Fprintf(&b, "udp_out = %s\n", FormatPortList(pc.UDPOut))
+	fmt.Fprintf(&b, "tcp_out = %s\n", ports.FormatList(pc.TCPOut))
+	fmt.Fprintf(&b, "udp_out = %s\n", ports.FormatList(pc.UDPOut))
 	fmt.Fprintf(&b, "\n# Always allow loopback traffic\n")
 	fmt.Fprintf(&b, "allow_localhost = %t\n", pc.AllowLocalhost)
 	return os.WriteFile(path, []byte(b.String()), 0644)
-}
-
-func parsePortList(s string) ([]uint16, error) {
-	if strings.TrimSpace(s) == "" {
-		return nil, nil
-	}
-	var ports []uint16
-	for _, part := range strings.Split(s, ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		if strings.Contains(part, "_") {
-			rangePorts, err := expandPortRange(part)
-			if err != nil {
-				return nil, err
-			}
-			ports = append(ports, rangePorts...)
-			continue
-		}
-		p, err := strconv.ParseUint(part, 10, 16)
-		if err != nil {
-			return nil, err
-		}
-		ports = append(ports, uint16(p))
-	}
-	return ports, nil
-}
-
-func expandPortRange(s string) ([]uint16, error) {
-	parts := strings.SplitN(s, "_", 2)
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid port range %q", s)
-	}
-	lo, err := strconv.ParseUint(strings.TrimSpace(parts[0]), 10, 16)
-	if err != nil {
-		return nil, err
-	}
-	hi, err := strconv.ParseUint(strings.TrimSpace(parts[1]), 10, 16)
-	if err != nil {
-		return nil, err
-	}
-	if hi < lo {
-		return nil, fmt.Errorf("invalid port range %q", s)
-	}
-	var ports []uint16
-	for p := lo; p <= hi; p++ {
-		ports = append(ports, uint16(p))
-	}
-	return ports, nil
-}
-
-func FormatPortList(ports []uint16) string {
-	if len(ports) == 0 {
-		return ""
-	}
-	parts := make([]string, len(ports))
-	for i, p := range ports {
-		parts[i] = strconv.Itoa(int(p))
-	}
-	return strings.Join(parts, ",")
 }

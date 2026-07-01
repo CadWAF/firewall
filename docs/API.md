@@ -93,7 +93,7 @@ Examples:
 - `tcp|out|d=22,80,443|s=198.51.100.0/24`
 - `tcp|out|d=3306|u=33`
 
-Port ranges: `2000_3000`. Multiport (max 15): `22,80,443`.
+Port ranges: `80-443` or CSF-style `2000_3000`. Multiport (max 15 per complex rule): `22,80,443`.
 
 **Kernel limit:** up to **64** complex rules total (combined from `firewall.allow` and `firewall.deny`). Whitelist/blocklist IPs are not counted toward this limit.
 

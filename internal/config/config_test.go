@@ -73,7 +73,7 @@ func TestLoadWithAPIKey(t *testing.T) {
 func TestLoadPorts(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ports.conf")
-	content := "tcp_in = 22,80,443\nudp_in = 53\nallow_localhost = false\n"
+	content := "tcp_in = 22,80-82\nudp_in = 53\nallow_localhost = false\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -82,8 +82,8 @@ func TestLoadPorts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPorts() error: %v", err)
 	}
-	if len(pc.TCPIn) != 3 || pc.TCPIn[0] != 22 {
-		t.Fatalf("TCPIn = %v, want [22 80 443]", pc.TCPIn)
+	if len(pc.TCPIn) != 4 || pc.TCPIn[0] != 22 || pc.TCPIn[3] != 82 {
+		t.Fatalf("TCPIn = %v, want [22 80 81 82]", pc.TCPIn)
 	}
 	if len(pc.UDPIn) != 1 || pc.UDPIn[0] != 53 {
 		t.Fatalf("UDPIn = %v, want [53]", pc.UDPIn)

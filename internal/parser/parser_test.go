@@ -57,6 +57,16 @@ func TestParsePortRange(t *testing.T) {
 	}
 }
 
+func TestParsePortHyphenRange(t *testing.T) {
+	e, err := ParseLine("tcp|in|d=80-82|s=203.0.113.5", ActionPass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(e.Ports) != 3 || e.Ports[0] != 80 || e.Ports[2] != 82 {
+		t.Fatalf("ports = %v", e.Ports)
+	}
+}
+
 func TestParseUIDRule(t *testing.T) {
 	e, err := ParseLine("tcp|out|d=3306|u=33", ActionPass)
 	if err != nil {

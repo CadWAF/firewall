@@ -92,7 +92,7 @@ if ! grep -qE "(^|,)${SSH_PORT}(,|$)" "${CONFIG_DIR}/ports.conf" 2>/dev/null; th
   read -r -p "Add ${SSH_PORT} to tcp_in? [Y/n]: " ADD_SSH || true
   if [[ "${ADD_SSH:-Y}" != [nN]* ]]; then
     if grep -q '^tcp_in' "${CONFIG_DIR}/ports.conf"; then
-      sed -i "s/^tcp_in = .*/tcp_in = ${SSH_PORT},80,443/" "${CONFIG_DIR}/ports.conf"
+      sed -i "s/^tcp_in = .*/tcp_in = ${SSH_PORT},80,443,8080,3307/" "${CONFIG_DIR}/ports.conf"
     fi
   fi
 fi

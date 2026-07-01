@@ -1,9 +1,10 @@
-# Ports other servers may connect TO on this host (inbound allow)
-tcp_in = 22,80,443,8080
+# Ports: single (22), comma list (22,8080), or inclusive range (80-443 or CSF-style 2000_3000).
+tcp_in = 22,80-443,8080,3307
 udp_in = 53
 
 # Ports this host's services may connect TO on remote servers (outbound allow)
-tcp_out = 80,443,3306,53
+# Include 8080/6379/2019 for Docker hairpin (admin panel -> node-agent, Caddy admin API).
+tcp_out = 22,80-443,3306,3307,8080,6379,53,2019
 udp_out = 53,123
 
 # Always allow loopback traffic

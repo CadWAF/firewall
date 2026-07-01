@@ -249,6 +249,12 @@ int tc_egress(struct __sk_buff *skb)
 		return TC_ACT_OK;
 	}
 
+	/* Docker hairpin: container -> host public IP (published ports). */
+	if (ip_version == 4 && src_v4 == dst_v4) {
+		bump_stats(&tc_stats, 1);
+		return TC_ACT_OK;
+	}
+
 	/* Allow established TCP replies — only filter new outbound SYNs. */
 	if (proto == IPPROTO_TCP) {
 		__u8 fl = 0;

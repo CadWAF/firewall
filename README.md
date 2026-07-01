@@ -66,10 +66,12 @@ Files live under `/etc/firewall/` (created by `make install`):
 
 Example `ports.conf`:
 
+Example `ports.conf` (ranges: `80-443` or CSF `2000_3000`):
+
 ```
-tcp_in = 22,80,443,8080
+tcp_in = 22,80-443,8080
 udp_in = 53
-tcp_out = 80,443,3306,53
+tcp_out = 80-443,3306,8080,53
 udp_out = 53,123
 allow_localhost = true
 ```
