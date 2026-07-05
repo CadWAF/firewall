@@ -2,8 +2,10 @@ package policy
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
+	"syscall"
 
 	"github.com/cilium/ebpf"
 	"github.com/huzenkon/waf-firewall/internal/bpf"
@@ -79,61 +81,39 @@ func expandRules(rules []parser.Entry) []parser.Entry {
 }
 
 func ApplyMaps(objs *bpf.FirewallObjects, st *State) error {
-	if err := clearLPMv4(objs.WhitelistV4); err != nil {
-		return err
+	wantWLv4, wantWLv6, err := lpmKeysFromCIDRs(st.Whitelist)
+	if err != nil {
+		return fmt.Errorf("whitelist: %w", err)
 	}
-	if err := clearLPMv6(objs.WhitelistV6); err != nil {
-		return err
-	}
-	if err := clearLPMv4(objs.BlocklistV4); err != nil {
-		return err
-	}
-	if err := clearLPMv6(objs.BlocklistV6); err != nil {
-		return err
-	}
-	if err := clearHash(objs.TcpInPorts); err != nil {
-		return err
-	}
-	if err := clearHash(objs.UdpInPorts); err != nil {
-		return err
-	}
-	if err := clearHash(objs.TcpOutPorts); err != nil {
-		return err
-	}
-	if err := clearHash(objs.UdpOutPorts); err != nil {
-		return err
+	wantBLv4, wantBLv6, err := lpmKeysFromCIDRs(st.Blocklist)
+	if err != nil {
+		return fmt.Errorf("blocklist: %w", err)
 	}
 
-	for _, ip := range st.Whitelist {
-		if err := putLPMIP(objs.WhitelistV4, objs.WhitelistV6, ip); err != nil {
-			return fmt.Errorf("whitelist %s: %w", ip, err)
-		}
+	// Upsert-before-delete: never leave maps empty during reload.
+	if err := syncLPMv4(objs.WhitelistV4, wantWLv4); err != nil {
+		return err
 	}
-	for _, ip := range st.Blocklist {
-		if err := putLPMIP(objs.BlocklistV4, objs.BlocklistV6, ip); err != nil {
-			return fmt.Errorf("blocklist %s: %w", ip, err)
-		}
+	if err := syncLPMv6(objs.WhitelistV6, wantWLv6); err != nil {
+		return err
 	}
-
-	for _, p := range st.Ports.TCPIn {
-		if err := objs.TcpInPorts.Put(p, uint8(1)); err != nil {
-			return err
-		}
+	if err := syncLPMv4(objs.BlocklistV4, wantBLv4); err != nil {
+		return err
 	}
-	for _, p := range st.Ports.UDPIn {
-		if err := objs.UdpInPorts.Put(p, uint8(1)); err != nil {
-			return err
-		}
+	if err := syncLPMv6(objs.BlocklistV6, wantBLv6); err != nil {
+		return err
 	}
-	for _, p := range st.Ports.TCPOut {
-		if err := objs.TcpOutPorts.Put(p, uint8(1)); err != nil {
-			return err
-		}
+	if err := syncPortHash(objs.TcpInPorts, st.Ports.TCPIn); err != nil {
+		return err
 	}
-	for _, p := range st.Ports.UDPOut {
-		if err := objs.UdpOutPorts.Put(p, uint8(1)); err != nil {
-			return err
-		}
+	if err := syncPortHash(objs.UdpInPorts, st.Ports.UDPIn); err != nil {
+		return err
+	}
+	if err := syncPortHash(objs.TcpOutPorts, st.Ports.TCPOut); err != nil {
+		return err
+	}
+	if err := syncPortHash(objs.UdpOutPorts, st.Ports.UDPOut); err != nil {
+		return err
 	}
 
 	policyKey := uint32(0)
@@ -148,18 +128,36 @@ func ApplyMaps(objs *bpf.FirewallObjects, st *State) error {
 	compiled := compileRules(st.Rules)
 	countKey := uint32(0)
 	count := uint32(len(compiled))
-	if err := objs.RuleCount.Put(countKey, count); err != nil {
-		return err
-	}
 	for i, rule := range compiled {
 		if err := objs.Rules.Put(uint32(i), rule); err != nil {
-			return err
+			return fmt.Errorf("rules[%d]: %w", i, err)
 		}
 	}
 	for i := count; i < parser.MaxRules; i++ {
-		_ = objs.Rules.Delete(uint32(i))
+		if err := deleteRuleSlot(objs.Rules, uint32(i)); err != nil {
+			return fmt.Errorf("rules delete[%d]: %w", i, err)
+		}
+	}
+	if err := objs.RuleCount.Put(countKey, count); err != nil {
+		return err
 	}
 	return nil
+}
+
+func deleteRuleSlot(m *ebpf.Map, key uint32) error {
+	err := m.Delete(key)
+	if err == nil || isMissingMapKey(err) {
+		return nil
+	}
+	return err
+}
+
+func isMissingMapKey(err error) bool {
+	if errors.Is(err, ebpf.ErrKeyNotExist) {
+		return true
+	}
+	var errno syscall.Errno
+	return errors.As(err, &errno) && errno == syscall.EINVAL
 }
 
 // Counts is a compact snapshot of the applied policy (counts only).

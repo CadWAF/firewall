@@ -108,6 +108,31 @@ curl -H "Authorization: Bearer ${FIREWALL_API_TOKEN}" http://127.0.0.1:9090/api/
 
 Full API reference: [`docs/API.md`](docs/API.md)
 
+## Diagnostic logging
+
+`firewalld` writes structured lines prefixed with **`fw-diag`** to journald and (by default) `/var/log/firewalld-diag.log`.
+
+Configure in `/etc/firewall/firewalld.env`:
+
+```bash
+FIREWALL_DIAG_LOG=/var/log/firewalld-diag.log   # or off
+FIREWALL_DIAG_INTERVAL=15m                      # periodic snapshot
+```
+
+**Every 15 minutes** (default): policy counts, whitelist IPs, BPF map sizes (v4 + v6), `tcp_in` map size, XDP/TC pass/drop totals and deltas.
+
+**On events**: startup, config file change, reload ok/fail, rollback, alerts (empty whitelist with no ports, BPF map mismatch, drop spikes).
+
+When reporting an outage, send:
+
+```bash
+journalctl -u firewalld --since "48 hours ago" | grep fw-diag
+tail -500 /var/log/firewalld-diag.log
+curl -s http://127.0.0.1:9090/health | jq .
+```
+
+Look for `reload_fail`, `rollback_fail`, `bpf_tcp_in_empty`, or `whitelist_cleared` — not `bpf_whitelist_partial` when `::1` is in the whitelist (IPv6 is counted separately as `map_wl_v6`).
+
 ## Emergency recovery
 
 If SSH is blocked by orphaned XDP/TC rules, run from your provider's console (VNC):

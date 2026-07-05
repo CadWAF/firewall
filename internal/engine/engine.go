@@ -11,16 +11,21 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/huzenkon/waf-firewall/internal/bpf"
 	"github.com/huzenkon/waf-firewall/internal/config"
+	"github.com/huzenkon/waf-firewall/internal/diag"
 	"github.com/huzenkon/waf-firewall/internal/policy"
 )
 
 type Engine struct {
-	cfg      *config.Config
-	fw       *bpf.Firewall
-	state    *policy.State
-	mu       sync.RWMutex
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	cfg       *config.Config
+	fw        *bpf.Firewall
+	state     *policy.State
+	mu        sync.RWMutex
+	reloadMu  sync.Mutex
+	stopCh    chan struct{}
+	stopOnce  sync.Once
+	startedAt time.Time
+	lastSnap  diag.Snapshot
+	lastStats bpf.Stats
 }
 
 func New(cfg *config.Config) (*Engine, error) {
@@ -35,6 +40,16 @@ func New(cfg *config.Config) (*Engine, error) {
 	}
 
 	st, err := policy.LoadState(cfg.AllowPath(), cfg.DenyPath(), cfg.PortsPath())
+	if err != nil {
+		return nil, err
+	}
+
+	// Normalize ports.conf on first start (inject SSH/QUIC if missing).
+	e := &Engine{cfg: cfg, state: st, stopCh: make(chan struct{}), startedAt: time.Now()}
+	if err := e.normalizeAndSavePorts(); err != nil {
+		return nil, err
+	}
+	st, err = policy.LoadState(cfg.AllowPath(), cfg.DenyPath(), cfg.PortsPath())
 	if err != nil {
 		return nil, err
 	}
@@ -54,29 +69,100 @@ func New(cfg *config.Config) (*Engine, error) {
 		return nil, err
 	}
 
-	e := &Engine{cfg: cfg, fw: fw, state: st, stopCh: make(chan struct{})}
+	e.fw = fw
+	e.state = st
 	log.Printf("firewall policy loaded: whitelist=%d blocklist=%d rules=%d iface=%s",
 		len(st.Whitelist), len(st.Blocklist), len(st.Rules), cfg.Iface)
+	e.logSnapshot(diag.EventStartup, "engine_start")
 	go e.watchConfig()
+	go e.periodicDiag()
 	return e, nil
 }
 
-func (e *Engine) Reload() error {
-	if err := policy.EnsureActiveSSHClientsAllow(e.cfg.AllowPath()); err != nil {
-		return fmt.Errorf("ssh safety: %w", err)
+func (e *Engine) loadedPorts() *config.PortsConfig {
+	pc, err := config.LoadPorts(e.cfg.PortsPath())
+	if err != nil {
+		return &config.PortsConfig{}
 	}
-	st, err := policy.LoadState(e.cfg.AllowPath(), e.cfg.DenyPath(), e.cfg.PortsPath())
+	return pc
+}
+
+func (e *Engine) normalizeAndSavePorts() error {
+	pc, err := config.LoadPorts(e.cfg.PortsPath())
 	if err != nil {
 		return err
 	}
-	if err := policy.ApplyMaps(e.fw.Objects(), st); err != nil {
+	beforeTCP := append([]uint16(nil), pc.TCPIn...)
+	beforeUDP := append([]uint16(nil), pc.UDPIn...)
+	policy.EnsureSafePorts(pc)
+	if portsEqual(beforeTCP, pc.TCPIn) && portsEqual(beforeUDP, pc.UDPIn) {
+		return nil
+	}
+	return config.SavePorts(e.cfg.PortsPath(), pc)
+}
+
+func portsEqual(a, b []uint16) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *Engine) Reload() error {
+	e.reloadMu.Lock()
+	defer e.reloadMu.Unlock()
+
+	diag.Log(diag.EventReloadStart, "trigger=reload")
+
+	if err := policy.EnsureSSHSafety(e.cfg.AllowPath(), e.cfg.DenyPath(), e.cfg.PortsPath()); err != nil {
+		diag.Log(diag.EventReloadFail, "stage=ssh_safety err="+err.Error())
+		return fmt.Errorf("ssh safety: %w", err)
+	}
+	if err := e.normalizeAndSavePorts(); err != nil {
+		diag.Log(diag.EventReloadFail, "stage=normalize_ports err="+err.Error())
 		return err
 	}
+
+	newSt, err := policy.LoadState(e.cfg.AllowPath(), e.cfg.DenyPath(), e.cfg.PortsPath())
+	if err != nil {
+		diag.Log(diag.EventReloadFail, "stage=load_state err="+err.Error())
+		return err
+	}
+	if err := policy.ValidateSSHReachable(e.cfg.AllowPath(), newSt.Ports); err != nil {
+		diag.Log(diag.EventReloadFail, "stage=validate_ssh err="+err.Error())
+		return err
+	}
+
+	e.mu.RLock()
+	oldSt := e.state
+	e.mu.RUnlock()
+
+	if err := policy.ApplyMaps(e.fw.Objects(), newSt); err != nil {
+		if oldSt != nil {
+			if rbErr := policy.ApplyMaps(e.fw.Objects(), oldSt); rbErr != nil {
+				diag.Log(diag.EventRollbackFail, "apply_err="+err.Error()+" rollback_err="+rbErr.Error())
+				log.Printf("CRITICAL: reload failed (%v) and rollback failed (%v)", err, rbErr)
+			} else {
+				diag.Log(diag.EventRollbackOK, "apply_err="+err.Error())
+				log.Printf("reload failed, restored previous policy: %v", err)
+			}
+		} else {
+			diag.Log(diag.EventReloadFail, "stage=apply_maps err="+err.Error()+" rollback=skipped_no_old_state")
+		}
+		return err
+	}
+
 	e.mu.Lock()
-	e.state = st
+	e.state = newSt
 	e.mu.Unlock()
 	log.Printf("firewall policy reloaded: whitelist=%d blocklist=%d rules=%d iface=%s",
-		len(st.Whitelist), len(st.Blocklist), len(st.Rules), e.cfg.Iface)
+		len(newSt.Whitelist), len(newSt.Blocklist), len(newSt.Rules), e.cfg.Iface)
+	e.logSnapshot(diag.EventReloadOK, "reload")
 	return nil
 }
 
@@ -116,6 +202,7 @@ func (e *Engine) watchConfig() {
 		debounce = time.AfterFunc(500*time.Millisecond, func() {
 			if err := e.Reload(); err != nil {
 				log.Printf("config reload failed: %v", err)
+				diag.Log(diag.EventReloadFail, "trigger=fsnotify err="+err.Error())
 			}
 		})
 	}
@@ -131,6 +218,7 @@ func (e *Engine) watchConfig() {
 			base := filepath.Base(event.Name)
 			switch base {
 			case "firewall.allow", "firewall.deny", "ports.conf":
+				diag.Log(diag.EventConfigChange, "file="+base+" op="+event.Op.String())
 				reload()
 			}
 		case err, ok := <-watcher.Errors:
@@ -155,6 +243,11 @@ func (e *Engine) Health() map[string]any {
 	}
 	if st := e.State(); st != nil {
 		m["policy"] = st.Counts()
+	}
+	if e.fw != nil {
+		if mc, err := policy.CountMaps(e.fw.Objects()); err == nil {
+			m["maps"] = mc
+		}
 	}
 	if s, err := e.Stats(); err == nil {
 		m["stats"] = map[string]any{

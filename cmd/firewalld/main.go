@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/huzenkon/waf-firewall/internal/api"
 	"github.com/huzenkon/waf-firewall/internal/config"
+	"github.com/huzenkon/waf-firewall/internal/diag"
 	"github.com/huzenkon/waf-firewall/internal/engine"
 )
 
@@ -19,6 +20,8 @@ func main() {
 	if len(os.Args) > 1 {
 		delegateToCLI()
 	}
+
+	diag.Init()
 
 	cfg, err := config.Load()
 	if err != nil {
