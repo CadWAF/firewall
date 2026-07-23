@@ -62,7 +62,9 @@ func containsPort(list []uint16, p uint16) bool {
 	return false
 }
 
-// ValidateSSHReachable returns an error when tcp_in excludes SSH and no whitelist exists.
+// ValidateSSHReachable returns an error when tcp_in excludes SSH and no
+// whitelist exists. Having any firewall.allow entry is enough — operators may
+// intentionally omit port 22 from tcp_in and reach SSH only via VPN / allowlist.
 func ValidateSSHReachable(allowPath string, pc *config.PortsConfig) error {
 	if containsPort(pc.TCPIn, sshPort()) {
 		return nil
@@ -71,16 +73,12 @@ func ValidateSSHReachable(allowPath string, pc *config.PortsConfig) error {
 	if err != nil {
 		return err
 	}
-	var whitelist []string
 	for _, e := range allowEntries {
 		if e.Kind == parser.EntrySimpleIP {
-			whitelist = append(whitelist, e.Raw)
+			return nil
 		}
 	}
-	if len(whitelist) == 0 {
-		return fmt.Errorf("tcp_in has no port %d and firewall.allow is empty — refusing to lock out SSH", sshPort())
-	}
-	return nil
+	return fmt.Errorf("tcp_in has no port %d and firewall.allow is empty — add your VPN/admin IP to firewall.allow or set tcp_in=%d", sshPort(), sshPort())
 }
 
 // lpmKeysFromCIDRs builds BPF LPM keys for all CIDRs in the list.

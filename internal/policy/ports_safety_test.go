@@ -43,3 +43,15 @@ func TestValidateSSHReachableRejectsEmptyAllow(t *testing.T) {
 		t.Fatal("expected error when ssh missing and allow empty")
 	}
 }
+
+func TestValidateSSHReachableAcceptsAllowWithoutSSHPort(t *testing.T) {
+	dir := t.TempDir()
+	allow := filepath.Join(dir, "firewall.allow")
+	if err := os.WriteFile(allow, []byte("10.8.0.1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	pc := &config.PortsConfig{TCPIn: []uint16{80, 443}}
+	if err := ValidateSSHReachable(allow, pc); err != nil {
+		t.Fatalf("whitelist-only SSH should be allowed: %v", err)
+	}
+}

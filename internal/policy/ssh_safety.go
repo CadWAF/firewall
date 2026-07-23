@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -26,14 +27,25 @@ func EnsureActiveSSHClientsAllow(allowPath string) error {
 	return nil
 }
 
-// EnsureSSHSafety keeps the current SSH session reachable after reload.
+// EnsureSSHSafety keeps SSH reachable after reload/activate.
+//
+// Intended model: either open SSH in tcp_in, OR keep administrators in
+// firewall.allow (typically VPN / bastion IPs) without exposing port 22 to the world.
 func EnsureSSHSafety(allowPath, denyPath, portsPath string) error {
+	_ = denyPath
+
 	if err := EnsureActiveSSHClientsAllow(allowPath); err != nil {
 		return err
 	}
 	if ip := sshClientIP(); ip != "" {
-		if err := parser.AppendIPToFile(allowPath, ip); err != nil {
+		covered, err := ipCoveredByAllow(allowPath, ip)
+		if err != nil {
 			return err
+		}
+		if !covered {
+			if err := parser.AppendIPToFile(allowPath, ip); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -45,24 +57,8 @@ func EnsureSSHSafety(allowPath, denyPath, portsPath string) error {
 		return nil
 	}
 
-	st, err := LoadState(allowPath, denyPath, portsPath)
-	if err != nil {
-		return err
-	}
-	if len(st.Whitelist) == 0 {
-		return fmt.Errorf("tcp_in has no port %d and firewall.allow is empty — refusing to lock out SSH", sshPort())
-	}
-
-	clientIP := sshClientIP()
-	if clientIP == "" {
-		return fmt.Errorf("tcp_in has no port %d — add your IP to firewall.allow or restore tcp_in=%d before reload", sshPort(), sshPort())
-	}
-	for _, v := range st.Whitelist {
-		if v == clientIP {
-			return nil
-		}
-	}
-	return fmt.Errorf("tcp_in has no port %d and %s is not in firewall.allow", sshPort(), clientIP)
+	// Whitelist-only SSH is valid: tcp_in may omit 22 when firewall.allow has entries.
+	return ValidateSSHReachable(allowPath, ports)
 }
 
 func sshClientIP() string {
@@ -93,6 +89,8 @@ func activeSSHClientIPs() []string {
 		if !ok || ip == "" || seen[ip] {
 			continue
 		}
+		// ss may print IPv6 as [addr]:port
+		ip = strings.Trim(ip, "[]")
 		if strings.Count(ip, ".") != 3 && !strings.Contains(ip, ":") {
 			continue
 		}
@@ -100,4 +98,51 @@ func activeSSHClientIPs() []string {
 		ips = append(ips, ip)
 	}
 	return ips
+}
+
+// ipCoveredByAllow reports whether ip is listed in firewall.allow exactly or
+// falls inside an allow CIDR (so VPN ranges work without opening tcp_in=22).
+func ipCoveredByAllow(allowPath, ipStr string) (bool, error) {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return false, fmt.Errorf("invalid client IP %q", ipStr)
+	}
+	entries, err := parser.ParseFile(allowPath, parser.ActionPass)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range entries {
+		if e.Kind != parser.EntrySimpleIP || e.IP == nil {
+			continue
+		}
+		if e.Raw == ipStr {
+			return true, nil
+		}
+		if e.IP.Equal(ip) {
+			return true, nil
+		}
+		prefix := e.PrefixLen
+		if prefix <= 0 {
+			if e.IP.To4() != nil {
+				prefix = 32
+			} else {
+				prefix = 128
+			}
+		}
+		var mask net.IPMask
+		if ip.To4() != nil && e.IP.To4() != nil {
+			mask = net.CIDRMask(prefix, 32)
+			if ip.Mask(mask).Equal(e.IP.To4().Mask(mask)) {
+				return true, nil
+			}
+			continue
+		}
+		if ip.To4() == nil && e.IP.To4() == nil {
+			mask = net.CIDRMask(prefix, 128)
+			if ip.Mask(mask).Equal(e.IP.Mask(mask)) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
