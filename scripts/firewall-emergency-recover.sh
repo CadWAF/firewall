@@ -34,8 +34,22 @@ else
   fi
 fi
 
+# Also clear orphaned XDP on Docker bridges (old DefaultInterface bug).
+echo "==> Scanning docker0/br-*/veth* for leftover XDP"
+while read -r dev; do
+  [[ -z "${dev}" ]] && continue
+  if ip link show "${dev}" 2>/dev/null | grep -q "xdp"; then
+    echo "    xdp off ${dev}"
+    ip link set dev "${dev}" xdp off || true
+  fi
+  if command -v tc >/dev/null 2>&1; then
+    tc filter del dev "${dev}" egress 2>/dev/null || true
+    tc qdisc del dev "${dev}" clsact 2>/dev/null || true
+  fi
+done < <(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | awk '{print $1}' | grep -E '^(docker0|br-|veth)' || true)
+
 rm -f /sys/fs/bpf/fwtest* 2>/dev/null || true
 
 echo "==> Done. Try SSH again."
 echo "    Before re-enabling: firewallctl allow <your-ip>"
-echo "    Then: firewallctl activate"
+echo "    Then: set FIREWALL_IFACE to WAN NIC (not docker0/br-*) and firewallctl activate"

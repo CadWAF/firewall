@@ -29,15 +29,14 @@ type Engine struct {
 }
 
 func New(cfg *config.Config) (*Engine, error) {
-	iface := cfg.Iface
-	if iface == "" {
-		var err error
-		iface, err = bpf.DefaultInterface()
-		if err != nil {
-			return nil, err
-		}
-		cfg.Iface = iface
+	// Always resolve via default-route + virtual-iface guards. Never pick the
+	// first net.Interface (often docker0/br-* on waf-filter hosts) — that
+	// attaches XDP to the Docker bridge and drops container userspace traffic.
+	iface, err := cfg.ResolveAttachIface()
+	if err != nil {
+		return nil, err
 	}
+	cfg.Iface = iface
 
 	st, err := policy.LoadState(cfg.AllowPath(), cfg.DenyPath(), cfg.PortsPath())
 	if err != nil {

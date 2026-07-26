@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -49,6 +50,13 @@ func (f *Firewall) Objects() *FirewallObjects { return f.objs }
 func (f *Firewall) Iface() string             { return f.iface }
 
 func (f *Firewall) Attach() error {
+	name := strings.ToLower(strings.TrimSpace(f.iface))
+	if name == "" || name == "lo" || name == "docker0" ||
+		strings.HasPrefix(name, "br-") || strings.HasPrefix(name, "veth") ||
+		strings.HasPrefix(name, "docker") || strings.HasPrefix(name, "cni") {
+		return fmt.Errorf("refusing XDP attach on virtual interface %q — use WAN NIC", f.iface)
+	}
+
 	// Orphaned XDP/TC from a crashed or partial stop would cause EBUSY.
 	_ = DetachInterface(f.iface)
 
@@ -204,6 +212,8 @@ func sumPerCPU(m *ebpf.Map, pass, drop *uint64) error {
 	return nil
 }
 
+// DefaultInterface picks a non-virtual host NIC that is up and has an address.
+// Prefer config.ResolveIface() (default route) for attach decisions.
 func DefaultInterface() (string, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -213,11 +223,17 @@ func DefaultInterface() (string, error) {
 		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
 			continue
 		}
+		name := strings.ToLower(iface.Name)
+		if name == "docker0" || strings.HasPrefix(name, "br-") || strings.HasPrefix(name, "veth") ||
+			strings.HasPrefix(name, "docker") || strings.HasPrefix(name, "cni") ||
+			strings.HasPrefix(name, "flannel") || strings.HasPrefix(name, "virbr") {
+			continue
+		}
 		addrs, err := iface.Addrs()
 		if err != nil || len(addrs) == 0 {
 			continue
 		}
 		return iface.Name, nil
 	}
-	return "", fmt.Errorf("no suitable network interface found")
+	return "", fmt.Errorf("no suitable physical network interface found (refusing docker/bridge/veth)")
 }

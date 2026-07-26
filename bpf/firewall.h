@@ -196,6 +196,25 @@ static __always_inline void bump_stats(void *map, int pass)
 		__sync_fetch_and_add(&st->drop, 1);
 }
 
+/* addr is network-byte-order IPv4. */
+static __always_inline int ip4_is_loopback(__u32 addr)
+{
+	return (bpf_ntohl(addr) & 0xff000000) == 0x7f000000; /* 127.0.0.0/8 */
+}
+
+/* RFC1918 — Docker bridge / compose networks (waf-filter). */
+static __always_inline int ip4_is_private(__u32 addr)
+{
+	__u32 h = bpf_ntohl(addr);
+	if ((h & 0xff000000) == 0x0a000000) /* 10.0.0.0/8 */
+		return 1;
+	if ((h & 0xfff00000) == 0xac100000) /* 172.16.0.0/12 */
+		return 1;
+	if ((h & 0xffff0000) == 0xc0a80000) /* 192.168.0.0/16 */
+		return 1;
+	return 0;
+}
+
 static __always_inline int ip4_in_lpm(void *map, __u32 addr)
 {
 	struct lpm_key_v4 key = {

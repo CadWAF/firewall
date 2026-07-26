@@ -21,7 +21,13 @@ Internet → XDP (ingress) → kernel stack → services
 services → TC egress → Internet
 ```
 
-Attach to the **physical NIC** (`eth0`, `ens*`), not `docker0`. Runs on the host beneath Docker/Caddy.
+Attach to the **physical NIC** (`eth0`, `ens*`), not `docker0` / `br-*` / `veth*`.
+Runs on the host beneath Docker/Caddy ([waf-filter](https://github.com/Revabrio/waf-filter)).
+
+If `FIREWALL_IFACE` is unset, the daemon uses the **default-route** interface and
+**refuses** Docker bridges. Attaching XDP to `br-*` drops container↔container
+traffic (userspace in waf-filter never receives packets) while the WAN still
+looks fine — matching hourly veth/bridge churn in the kernel log.
 
 ## Requirements
 

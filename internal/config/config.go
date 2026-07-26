@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -70,31 +69,6 @@ func LoadEnvFile(path string) {
 		}
 		_ = os.Setenv(key, strings.TrimSpace(val))
 	}
-}
-
-func (c *Config) ResolveIface() (string, error) {
-	if c.Iface != "" {
-		return c.Iface, nil
-	}
-	iface, err := defaultRouteIface()
-	if err != nil {
-		return "", err
-	}
-	return iface, nil
-}
-
-func defaultRouteIface() (string, error) {
-	out, err := exec.Command("ip", "route", "show", "default").Output()
-	if err != nil {
-		return "", fmt.Errorf("detect default interface: %w", err)
-	}
-	fields := strings.Fields(string(out))
-	for i, f := range fields {
-		if f == "dev" && i+1 < len(fields) {
-			return fields[i+1], nil
-		}
-	}
-	return "", fmt.Errorf("could not detect default interface")
 }
 
 func envOr(key, fallback string) string {

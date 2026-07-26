@@ -2,6 +2,7 @@ package ctl
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -49,7 +50,11 @@ func HooksOff(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	return hooks.Detach(iface)
+	if err := hooks.Detach(iface); err != nil {
+		// Keep going — also clean Docker bridge leftovers below.
+		fmt.Fprintf(os.Stderr, "hooks-off: %v\n", err)
+	}
+	return hooks.DetachVirtualLeftovers()
 }
 
 func Status(cfg *config.Config) (StatusInfo, error) {

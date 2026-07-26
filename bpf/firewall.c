@@ -93,11 +93,17 @@ int xdp_firewall(struct xdp_md *ctx)
 	struct policy_config *pol = bpf_map_lookup_elem(&policy, &policy_key);
 
 	if (pol && pol->allow_localhost) {
-		if (ip_version == 4 && (src_v4 == bpf_htonl(0x7f000001) ||
-					dst_v4 == bpf_htonl(0x7f000001))) {
+		if (ip_version == 4 && (ip4_is_loopback(src_v4) ||
+					ip4_is_loopback(dst_v4))) {
 			bump_stats(&xdp_stats, 1);
 			return XDP_PASS;
 		}
+	}
+
+	/* Never blackhole Docker / compose mesh if XDP was mis-attached to a bridge. */
+	if (ip_version == 4 && ip4_is_private(src_v4) && ip4_is_private(dst_v4)) {
+		bump_stats(&xdp_stats, 1);
+		return XDP_PASS;
 	}
 
 	if (ip_version == 4) {
@@ -273,11 +279,17 @@ int tc_egress(struct __sk_buff *skb)
 	struct policy_config *pol = bpf_map_lookup_elem(&policy, &policy_key);
 
 	if (pol && pol->allow_localhost) {
-		if (ip_version == 4 && (src_v4 == bpf_htonl(0x7f000001) ||
-					dst_v4 == bpf_htonl(0x7f000001))) {
+		if (ip_version == 4 && (ip4_is_loopback(src_v4) ||
+					ip4_is_loopback(dst_v4))) {
 			bump_stats(&tc_stats, 1);
 			return TC_ACT_OK;
 		}
+	}
+
+	/* Docker bridge / overlay mesh must not be shot by TC on a mis-bound iface. */
+	if (ip_version == 4 && ip4_is_private(src_v4) && ip4_is_private(dst_v4)) {
+		bump_stats(&tc_stats, 1);
+		return TC_ACT_OK;
 	}
 
 	if (ip_version == 4) {
