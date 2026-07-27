@@ -43,7 +43,15 @@ deploy_git_pull "${PROJECT_DIR}"
 
 cd "${PROJECT_DIR}"
 
+# shellcheck source=scripts/ensure-build-deps.sh
+source "${SCRIPT_DIR}/scripts/ensure-build-deps.sh"
+
 if [[ "${DEPLOY_NO_BUILD:-0}" != "1" ]]; then
+  deploy_log "==> Ensuring build dependencies (Go >= 1.23, clang, libbpf)"
+  ensure_firewall_build_deps
+  # Official Go may live in /usr/local/go/bin
+  export PATH="/usr/local/go/bin:${PATH}"
+
   deploy_log "==> Building firewalld"
   deploy_run "make generate"
   deploy_run "make build"

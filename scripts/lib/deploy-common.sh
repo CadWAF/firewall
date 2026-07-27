@@ -171,3 +171,82 @@ deploy_wait_compose_healthy() {
 
   deploy_die "Container ${service} did not become healthy in time"
 }
+
+# ---- Secret generation (first deploy) --------------------------------------
+
+deploy_rand_hex() {
+  local bytes="${1:-32}"
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex "${bytes}"
+    return 0
+  fi
+  head -c "${bytes}" /dev/urandom | xxd -p -c 256 | tr -d '\n'
+}
+
+deploy_rand_password() {
+  local len="${1:-28}"
+  local out=""
+  while [[ ${#out} -lt ${len} ]]; do
+    out+="$(deploy_rand_hex 24)"
+  done
+  printf '%s' "${out:0:${len}}"
+}
+
+deploy_rand_api_key() {
+  deploy_rand_hex 32
+}
+
+deploy_rand_app_key() {
+  if command -v openssl >/dev/null 2>&1; then
+    printf 'base64:%s' "$(openssl rand -base64 32 | tr -d '\n')"
+    return 0
+  fi
+  printf 'base64:%s' "$(deploy_rand_hex 32 | xxd -r -p 2>/dev/null | base64 | tr -d '\n')"
+}
+
+deploy_env_get() {
+  local file="$1"
+  local key="$2"
+  [[ -f "${file}" ]] || { printf ''; return 0; }
+  grep -m1 "^${key}=" "${file}" 2>/dev/null | cut -d= -f2- | tr -d '\r' || true
+}
+
+deploy_env_set() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  local tmp
+  touch "${file}"
+  if grep -qE "^${key}=" "${file}" 2>/dev/null; then
+    tmp="$(mktemp)"
+    awk -v k="${key}" -v v="${value}" 'BEGIN{FS=OFS="="} $1==k{$0=k"="v} {print}' "${file}" >"${tmp}"
+    mv "${tmp}" "${file}"
+  else
+    printf '%s=%s\n' "${key}" "${value}" >>"${file}"
+  fi
+}
+
+# True if value looks like a shipped example / empty placeholder.
+deploy_is_placeholder_secret() {
+  local v="${1:-}"
+  case "${v}" in
+    ''|secret|waf|changeme|null|NULL|'""'|dev-node-key-change-me|CHANGE_ME|changeme-*|Wl6nfhb654nt58%n3vfB8f4bgigfh)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+# First-deploy gate: marker missing OR force flag.
+deploy_is_first_secrets() {
+  local dir="${1:-.}"
+  [[ "${DEPLOY_FORCE_NEW_SECRETS:-0}" == "1" ]] && return 0
+  [[ ! -f "${dir}/.secrets-initialized" ]]
+}
+
+deploy_mark_secrets_initialized() {
+  local dir="${1:-.}"
+  date -u +%Y-%m-%dT%H:%M:%SZ >"${dir}/.secrets-initialized"
+  chmod 600 "${dir}/.secrets-initialized" 2>/dev/null || true
+}
+

@@ -26,22 +26,11 @@ fi
 echo "==> WAF eBPF/XDP Host Firewall setup"
 echo "    Source: ${FW_DIR}"
 
-install_deps() {
-  if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq
-    apt-get install -y -qq clang llvm libbpf-dev "linux-headers-$(uname -r)" golang make curl iproute2
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y clang llvm libbpf-devel "kernel-headers-$(uname -r)" golang make curl iproute
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y clang llvm libbpf-devel kernel-headers golang make curl iproute
-  else
-    echo "Install manually: clang, llvm, libbpf-dev, linux-headers, golang, make" >&2
-    exit 1
-  fi
-}
-
 echo "==> Installing build dependencies"
-install_deps
+# shellcheck source=ensure-build-deps.sh
+source "${SCRIPT_DIR}/ensure-build-deps.sh"
+ensure_firewall_build_deps
+export PATH="/usr/local/go/bin:${PATH}"
 
 echo "==> Building firewalld"
 cd "${FW_DIR}"
