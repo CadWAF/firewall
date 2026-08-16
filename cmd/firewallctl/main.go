@@ -137,7 +137,7 @@ Service control:
   deactivate              Stop firewalld and detach XDP/TC hooks
   reactivate              Deactivate then activate
   reload                  Apply firewall.allow, firewall.deny, ports.conf to BPF
-  hooks-off               Detach XDP/TC hooks only (used by systemd)
+  hooks-off               Stop firewalld if needed, then detach XDP/TC (bpf_link)
 
 Other:
   status                  Show service and policy counts

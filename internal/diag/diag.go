@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -20,6 +21,7 @@ const (
 	EventRollbackFail = "rollback_fail"
 	EventConfigChange = "config_change"
 	EventAlert        = "alert"
+	EventMapRefresh   = "map_refresh"
 )
 
 var (
@@ -56,6 +58,24 @@ func Interval() time.Duration {
 		}
 	}
 	return 15 * time.Minute
+}
+
+// MapRefreshInterval returns how often to re-apply BPF map contents from disk
+// without detaching XDP/TC. Default 12h. Set FIREWALL_MAP_REFRESH_INTERVAL=off
+// (or 0) to disable.
+func MapRefreshInterval() time.Duration {
+	v := strings.TrimSpace(os.Getenv("FIREWALL_MAP_REFRESH_INTERVAL"))
+	if v == "" {
+		return 12 * time.Hour
+	}
+	if v == "off" || v == "0" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < time.Minute {
+		return 12 * time.Hour
+	}
+	return d
 }
 
 // Snapshot holds a point-in-time firewall diagnostic record.

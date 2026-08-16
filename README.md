@@ -123,9 +123,12 @@ Configure in `/etc/firewall/firewalld.env`:
 ```bash
 FIREWALL_DIAG_LOG=/var/log/firewalld-diag.log   # or off
 FIREWALL_DIAG_INTERVAL=15m                      # periodic snapshot
+FIREWALL_MAP_REFRESH_INTERVAL=12h               # re-sync BPF maps in place (off to disable)
 ```
 
-**Every 15 minutes** (default): policy counts, whitelist IPs, BPF map sizes (v4 + v6), `tcp_in` map size, XDP/TC pass/drop totals and deltas.
+**Every 15 minutes** (default): policy counts, whitelist IPs, BPF map sizes (v4 + v6), `tcp_in` map size, XDP/TC pass/drop totals and deltas. Also verifies that configured ports/IPs are **lookupable** in maps (not just counts).
+
+**Every 12 hours** (default): re-reads `firewall.allow` / `firewall.deny` / `ports.conf` and `ApplyMaps` into the **same** attached XDP/TC programs — no hook detach, no traffic blackout from refresh. Also triggers immediately if map-integrity alerts fire.
 
 **On events**: startup, config file change, reload ok/fail, rollback, alerts (empty whitelist with no ports, BPF map mismatch, drop spikes).
 
@@ -153,6 +156,25 @@ Then whitelist your IP before re-enabling:
 firewallctl allow <your-ip>
 firewallctl activate
 ```
+
+**Why `hooks-off` alone used to look like a no-op:** XDP is attached with a
+`bpf_link` owned by the running `firewalld` process. `ip link set xdp off`
+does not drop that link while the daemon is alive. `firewall-emergency-recover.sh`
+works because it **stops firewalld first** (releasing the link), then detaches.
+`firewallctl hooks-off` now stops the service when it is active for the same reason.
+
+Note: with `tcp_in = 80,443` only, **SSH (22) is denied** unless your client IP
+is in `firewall.allow`. That is expected policy, not a stuck hook.
+
+If **80/443 or allow-listed IPs are also blocked**, that is a bug (false XDP drop /
+stale `bpf_link`), not policy. Check:
+
+```bash
+curl -s http://127.0.0.1:9090/health | jq .map_integrity,.status
+journalctl -u firewalld | grep -E 'bpf_tcp_in_keys_missing|bpf_whitelist_keys_missing'
+```
+
+`status: degraded` or those alerts mean config says allow but BPF keys do not match.
 
 ## Development
 

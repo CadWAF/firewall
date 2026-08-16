@@ -12,8 +12,10 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-// Detach removes XDP and TC egress hooks from the interface, matching
-// scripts/firewall-emergency-recover.sh behaviour.
+# Detach removes XDP and TC egress hooks from the interface via netlink.
+# This alone is NOT enough while firewalld is running: Attach uses bpf_link
+# (cilium link.AttachXDP), which stays active until the daemon closes it.
+# Callers that need a hard clear must stop firewalld first (see ctl.HooksOff).
 func Detach(iface string) error {
 	if iface == "" {
 		return fmt.Errorf("interface is required")

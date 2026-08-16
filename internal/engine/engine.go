@@ -75,6 +75,7 @@ func New(cfg *config.Config) (*Engine, error) {
 	e.logSnapshot(diag.EventStartup, "engine_start")
 	go e.watchConfig()
 	go e.periodicDiag()
+	go e.periodicMapRefresh()
 	return e, nil
 }
 
@@ -246,6 +247,28 @@ func (e *Engine) Health() map[string]any {
 	if e.fw != nil {
 		if mc, err := policy.CountMaps(e.fw.Objects()); err == nil {
 			m["maps"] = mc
+		}
+		if st := e.State(); st != nil && e.fw.Objects() != nil {
+			integrity := map[string]any{}
+			if st.Ports != nil {
+				missing, err := policy.VerifyPortMapKeys(e.fw.Objects().TcpInPorts, st.Ports.TCPIn)
+				if err != nil {
+					integrity["tcp_in_err"] = err.Error()
+				} else if len(missing) > 0 {
+					integrity["tcp_in_missing"] = missing
+					m["status"] = "degraded"
+				}
+			}
+			missingWL, err := policy.VerifyWhitelistV4Keys(e.fw.Objects().WhitelistV4, st.Whitelist)
+			if err != nil {
+				integrity["whitelist_err"] = err.Error()
+			} else if len(missingWL) > 0 {
+				integrity["whitelist_missing"] = missingWL
+				m["status"] = "degraded"
+			}
+			if len(integrity) > 0 {
+				m["map_integrity"] = integrity
+			}
 		}
 	}
 	if s, err := e.Stats(); err == nil {
