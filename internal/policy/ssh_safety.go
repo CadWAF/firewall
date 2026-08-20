@@ -3,15 +3,27 @@ package policy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/huzenkon/waf-firewall/internal/config"
+	"github.com/huzenkon/waf-firewall/internal/diag"
 	"github.com/huzenkon/waf-firewall/internal/parser"
 )
+
+// sshQueryTimeout bounds the "ss" subprocess used to discover active SSH
+// clients. Reload() runs on the same mutex for every trigger (fsnotify,
+// the 12h map-refresh timer, 15m integrity self-heal, the HTTP API, and
+// SIGHUP) — if this ever hung with no timeout, it would wedge that mutex
+// forever and silently disable every future reload, including the
+// self-healing ones. From that point the live BPF maps would freeze at
+// whatever they were and never again pick up config changes.
+const sshQueryTimeout = 5 * time.Second
 
 // EnsureActiveSSHClientsAllow appends IPs of established SSH sessions to the
 // allow file so a reload cannot lock out the current administrator.
@@ -72,8 +84,15 @@ func sshClientIP() string {
 
 func activeSSHClientIPs() []string {
 	port := sshPort()
-	out, err := exec.Command("ss", "-H", "-tn", "state", "established", "sport", fmt.Sprintf("=:%d", port)).Output()
+
+	ctx, cancel := context.WithTimeout(context.Background(), sshQueryTimeout)
+	defer cancel()
+
+	out, err := exec.CommandContext(ctx, "ss", "-H", "-tn", "state", "established", "sport", fmt.Sprintf("=:%d", port)).Output()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			diag.Log(diag.EventAlert, fmt.Sprintf("ssh_safety_ss_timeout after=%s — active SSH clients not auto-whitelisted this reload", sshQueryTimeout))
+		}
 		return nil
 	}
 	var ips []string
@@ -81,10 +100,17 @@ func activeSSHClientIPs() []string {
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
 		fields := strings.Fields(sc.Text())
-		if len(fields) < 4 {
+		// `ss -H -tn state established` prints:
+		//   State Recv-Q Send-Q Local-Address:Port Peer-Address:Port
+		// i.e. 5 fields — the peer (remote/client) address is fields[4],
+		// not fields[3] (that's the LOCAL address, e.g. this host's own
+		// IP on port 22). Using fields[3] whitelisted the server's own
+		// address instead of the admin's, so the "never lock yourself
+		// out" safety net was silently a no-op.
+		if len(fields) < 5 {
 			continue
 		}
-		peer := fields[3]
+		peer := fields[4]
 		ip, _, ok := strings.Cut(peer, ":")
 		if !ok || ip == "" || seen[ip] {
 			continue

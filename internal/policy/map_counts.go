@@ -155,3 +155,34 @@ func VerifyWhitelistV4Keys(m *ebpf.Map, ips []string) (missing []string, err err
 	return missing, nil
 }
 
+// VerifyWhitelistV6Keys is the IPv6 counterpart of VerifyWhitelistV4Keys.
+// Previously only v4 was checked by the periodic integrity self-heal, so an
+// IPv6-only admin allow entry could silently false-drop forever without
+// tripping any alert or triggering RefreshMaps.
+func VerifyWhitelistV6Keys(m *ebpf.Map, ips []string) (missing []string, err error) {
+	if m == nil {
+		return ips, nil
+	}
+	for _, raw := range ips {
+		ip := net.ParseIP(raw)
+		if ip == nil || ip.To4() != nil {
+			continue
+		}
+		key := bpf.FirewallLpmKeyV6{Prefixlen: 128}
+		copy(key.Addr[:], ip.To16())
+		var val uint8
+		lookupErr := m.Lookup(key, &val)
+		if lookupErr != nil {
+			if isMissingMapKey(lookupErr) {
+				missing = append(missing, raw)
+				continue
+			}
+			return missing, lookupErr
+		}
+		if val == 0 {
+			missing = append(missing, raw)
+		}
+	}
+	return missing, nil
+}
+

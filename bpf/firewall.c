@@ -89,6 +89,27 @@ int xdp_firewall(struct xdp_md *ctx)
 		return XDP_PASS;
 	}
 
+	/*
+	 * DHCP lease renewal reply (server:67 -> client:68) must never be
+	 * policy-gated. There is no conntrack here, so unlike an established
+	 * TCP ACK, a DHCPACK/DHCPOFFER looks exactly like any other
+	 * unsolicited inbound UDP packet and falls to the default drop
+	 * unless the operator happened to whitelist the DHCP server IP or
+	 * put port 67 in udp_in — neither of which anyone does. If it gets
+	 * dropped, the DHCP client never sees the reply, keeps retrying
+	 * until the lease's hard expiry, then tears down the host's own
+	 * address/default route. From outside that is indistinguishable
+	 * from "the firewall dropped everything", and it does not self-heal
+	 * (a new DISCOVER's OFFER gets dropped too) — this is the exact
+	 * failure this project's own diagnostic logging was built to catch
+	 * ("firewalld.env.example: troubleshooting 24h outages"): the DHCP
+	 * lease timer, not anything in the reload/refresh path.
+	 */
+	if (ip_version == 4 && proto == IPPROTO_UDP && src_port == 67 && dst_port == 68) {
+		bump_stats(&xdp_stats, 1);
+		return XDP_PASS;
+	}
+
 	__u32 policy_key = 0;
 	struct policy_config *pol = bpf_map_lookup_elem(&policy, &policy_key);
 

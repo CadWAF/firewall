@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/huzenkon/waf-firewall/internal/bpf"
 	"github.com/huzenkon/waf-firewall/internal/diag"
 	"github.com/huzenkon/waf-firewall/internal/policy"
@@ -91,15 +92,30 @@ func (e *Engine) checkMapKeyIntegrity() {
 		return
 	}
 	if st.Ports != nil {
-		missing, err := policy.VerifyPortMapKeys(objs.TcpInPorts, st.Ports.TCPIn)
-		if err != nil {
-			diag.Log(diag.EventAlert, "bpf_tcp_in_lookup_err err="+err.Error())
-		} else if len(missing) > 0 {
-			diag.Log(diag.EventAlert, fmt.Sprintf(
-				"bpf_tcp_in_keys_missing config_ports=%v missing_in_map=%v — inbound to these ports is XDP_DROP",
-				st.Ports.TCPIn, missing,
-			))
-			go e.RefreshMaps("integrity_tcp_in")
+		portChecks := []struct {
+			name    string
+			m       *ebpf.Map
+			want    []uint16
+			trigger string
+		}{
+			{"tcp_in", objs.TcpInPorts, st.Ports.TCPIn, "integrity_tcp_in"},
+			{"udp_in", objs.UdpInPorts, st.Ports.UDPIn, "integrity_udp_in"},
+			{"tcp_out", objs.TcpOutPorts, st.Ports.TCPOut, "integrity_tcp_out"},
+			{"udp_out", objs.UdpOutPorts, st.Ports.UDPOut, "integrity_udp_out"},
+		}
+		for _, c := range portChecks {
+			missing, err := policy.VerifyPortMapKeys(c.m, c.want)
+			if err != nil {
+				diag.Log(diag.EventAlert, fmt.Sprintf("bpf_%s_lookup_err err=%s", c.name, err.Error()))
+				continue
+			}
+			if len(missing) > 0 {
+				diag.Log(diag.EventAlert, fmt.Sprintf(
+					"bpf_%s_keys_missing config_ports=%v missing_in_map=%v — traffic on these ports is XDP_DROP/TC_ACT_SHOT",
+					c.name, c.want, missing,
+				))
+				go e.RefreshMaps(c.trigger)
+			}
 		}
 	}
 	missingWL, err := policy.VerifyWhitelistV4Keys(objs.WhitelistV4, st.Whitelist)
@@ -111,6 +127,16 @@ func (e *Engine) checkMapKeyIntegrity() {
 			missingWL,
 		))
 		go e.RefreshMaps("integrity_whitelist")
+	}
+	missingWL6, err := policy.VerifyWhitelistV6Keys(objs.WhitelistV6, st.Whitelist)
+	if err != nil {
+		diag.Log(diag.EventAlert, "bpf_whitelist_v6_lookup_err err="+err.Error())
+	} else if len(missingWL6) > 0 {
+		diag.Log(diag.EventAlert, fmt.Sprintf(
+			"bpf_whitelist_v6_keys_missing missing_in_map=%v — allow-list IPv6s are not matching XDP lookups",
+			missingWL6,
+		))
+		go e.RefreshMaps("integrity_whitelist_v6")
 	}
 }
 

@@ -114,7 +114,17 @@ func portsEqual(a, b []uint16) bool {
 }
 
 func (e *Engine) Reload() error {
-	e.reloadMu.Lock()
+	// reloadMu serializes every trigger: fsnotify, the 12h map-refresh
+	// timer, the 15m integrity self-heal, the HTTP API, and SIGHUP. If one
+	// call ever hangs (e.g. a stuck subprocess), it blocks all of those
+	// silently — including the two self-healing paths that exist
+	// specifically to recover from "config says X but BPF maps say Y"
+	// drift. TryLock first so contention shows up in fw-diag instead of
+	// just going quiet.
+	if !e.reloadMu.TryLock() {
+		diag.Log(diag.EventReloadStart, "trigger=reload status=waiting_lock note=previous_reload_still_running")
+		e.reloadMu.Lock()
+	}
 	defer e.reloadMu.Unlock()
 
 	diag.Log(diag.EventReloadStart, "trigger=reload")
