@@ -68,7 +68,8 @@ else
 fi
 
 SSH_PORT="${SSH_PORT:-22}"
-CALLER_IP="${SSH_CLIENT%% *}"
+CALLER_IP="${SSH_CLIENT:-}"
+CALLER_IP="${CALLER_IP%% *}"
 if [[ -n "${CALLER_IP}" ]]; then
   if ! grep -qxF "${CALLER_IP}" "${CONFIG_DIR}/firewall.allow" 2>/dev/null; then
     echo "${CALLER_IP}" >>"${CONFIG_DIR}/firewall.allow"

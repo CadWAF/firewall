@@ -75,7 +75,12 @@ for pair in "${DISTROS[@]}"; do
       /tmp/llvm.sh 18 >/tmp/llvm-install.log 2>&1 || (tail -50 /tmp/llvm-install.log; exit 1)"
     fi
   else
-    install_cmd="dnf install -y -q clang llvm libbpf-devel make git ca-certificates curl tar file
+    # libbpf-devel lives in CRB (CodeReady Builder), disabled by default.
+    # --allowerasing: the minimal image ships curl-minimal, which conflicts
+    # with the full curl package on a plain install.
+    install_cmd="dnf install -y -q dnf-plugins-core
+      dnf config-manager --set-enabled crb
+      dnf install -y -q --allowerasing clang llvm libbpf-devel make git ca-certificates curl tar file
       ${go_install}"
   fi
 
@@ -101,7 +106,7 @@ for pair in "${DISTROS[@]}"; do
         file bin/firewalld
 
         pkg=\"waf-firewall-${VERSION}-${distro}-\${arch}\"
-        mkdir -p \"\${pkg}/configs\" \"\${pkg}/docs\" \"\${pkg}/scripts\"
+        mkdir -p \"\${pkg}/configs\" \"\${pkg}/docs\"
         cp bin/firewalld bin/firewallctl \"\${pkg}/\"
         cp scripts/install-release.sh \"\${pkg}/install.sh\"
         chmod +x \"\${pkg}/install.sh\"

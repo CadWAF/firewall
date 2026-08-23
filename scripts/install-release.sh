@@ -105,8 +105,12 @@ log "Attach interface: ${IFACE}"
 # reachable through tcp_in — this is the non-interactive install, so unlike
 # setup-firewall.sh there is no prompt; default to the safe choice both ways. ---
 SSH_PORT="${SSH_PORT:-22}"
-CALLER_IP="${SSH_CLIENT%% *}"
-CALLER_IP="${CALLER_IP:-${SSH_CONNECTION%% *}}"
+CALLER_IP="${SSH_CLIENT:-}"
+CALLER_IP="${CALLER_IP%% *}"
+if [[ -z "${CALLER_IP}" ]]; then
+  CALLER_IP="${SSH_CONNECTION:-}"
+  CALLER_IP="${CALLER_IP%% *}"
+fi
 if [[ -n "${CALLER_IP}" ]] && ! grep -qxF "${CALLER_IP}" "${CONFIG_DIR}/firewall.allow" 2>/dev/null; then
   echo "${CALLER_IP}" >>"${CONFIG_DIR}/firewall.allow"
   log "Whitelisted SSH client IP: ${CALLER_IP}"
