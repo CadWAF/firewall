@@ -241,6 +241,13 @@ func (e *Engine) watchConfig() {
 }
 
 func (e *Engine) Stats() (bpf.Stats, error) {
+	if e.fw == nil {
+		// No BPF attached (NewTestEngine, or Health() called during a
+		// narrow window before New() finishes). The Linux loader's
+		// Stats() dereferences the receiver immediately, so this must be
+		// checked here rather than left to the caller.
+		return bpf.Stats{}, nil
+	}
 	return e.fw.Stats()
 }
 
