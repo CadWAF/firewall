@@ -1,6 +1,11 @@
 # Ports: single (22), comma list (22,8080), or inclusive range (80-443 or CSF-style 2000_3000).
+#
+# udp_in lists ports of *services on this host* that accept inbound UDP, and
+# also the source ports whose replies are accepted (there is no conntrack).
+# DNS (53) and DHCP no longer need listing here — replies to our own outbound
+# queries are recognised in the XDP program itself. 443 is QUIC / HTTP-3.
 tcp_in = 22,80-443,8080,8081,3307
-udp_in = 53,443
+udp_in = 443
 
 # Ports this host's services may connect TO on remote servers (outbound allow)
 # Include 8080/6379/2019 for Docker hairpin (admin panel -> node-agent, Caddy admin API).

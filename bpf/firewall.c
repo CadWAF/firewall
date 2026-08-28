@@ -110,6 +110,25 @@ int xdp_firewall(struct xdp_md *ctx)
 		return XDP_PASS;
 	}
 
+	/*
+	 * DNS reply (resolver:53 -> our ephemeral port). Same shape of bug as
+	 * the DHCP case above: the query leaves fine under udp_out, but with no
+	 * conntrack the reply is just unsolicited inbound UDP, so it is dropped
+	 * unless the operator thought to list 53 in udp_in. The symptom is not
+	 * "the firewall blocked DNS" — it is every outbound name lookup on the
+	 * host timing out, which reads as a broken network (docker builds,
+	 * package installs, ACME, and webhook calls all fail at once).
+	 *
+	 * Restricted to replies landing on an ephemeral port: a resolver's
+	 * answer always does, while a service listening below 1024 must still
+	 * be opened explicitly via udp_in. That is strictly tighter than the
+	 * udp_in=53 workaround it replaces, which allowed any destination port.
+	 */
+	if (proto == IPPROTO_UDP && src_port == 53 && dst_port >= 1024) {
+		bump_stats(&xdp_stats, 1);
+		return XDP_PASS;
+	}
+
 	__u32 policy_key = 0;
 	struct policy_config *pol = bpf_map_lookup_elem(&policy, &policy_key);
 
