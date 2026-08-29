@@ -151,11 +151,11 @@ func (h *Handler) getPorts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{
-		"tcp_in":           st.Ports.TCPIn,
-		"udp_in":           st.Ports.UDPIn,
-		"tcp_out":          st.Ports.TCPOut,
-		"udp_out":          st.Ports.UDPOut,
-		"allow_localhost":  st.Ports.AllowLocalhost,
+		"tcp_in":          st.Ports.TCPIn,
+		"udp_in":          st.Ports.UDPIn,
+		"tcp_out":         st.Ports.TCPOut,
+		"udp_out":         st.Ports.UDPOut,
+		"allow_localhost": st.Ports.AllowLocalhost,
 	})
 }
 

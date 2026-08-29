@@ -185,4 +185,3 @@ func VerifyWhitelistV6Keys(m *ebpf.Map, ips []string) (missing []string, err err
 	}
 	return missing, nil
 }
-

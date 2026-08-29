@@ -80,29 +80,29 @@ func MapRefreshInterval() time.Duration {
 
 // Snapshot holds a point-in-time firewall diagnostic record.
 type Snapshot struct {
-	UptimeSec       int64
-	Iface           string
-	Trigger         string
-	WhitelistN      int
-	BlocklistN      int
-	RulesN          int
-	TCPInN          int
-	UDPInN          int
-	TCPOutN         int
-	UDPOutN         int
-	MapWhitelistV4  int
-	MapWhitelistV6  int
-	MapBlocklistV4  int
-	MapBlocklistV6  int
-	MapTCPIn        int
-	WhitelistIPs    []string
-	XDPPass         uint64
-	XDPDrop         uint64
-	TCPass          uint64
-	TCDrop          uint64
-	XDPDropDelta    uint64
-	TCDropDelta     uint64
-	Extra           string
+	UptimeSec      int64
+	Iface          string
+	Trigger        string
+	WhitelistN     int
+	BlocklistN     int
+	RulesN         int
+	TCPInN         int
+	UDPInN         int
+	TCPOutN        int
+	UDPOutN        int
+	MapWhitelistV4 int
+	MapWhitelistV6 int
+	MapBlocklistV4 int
+	MapBlocklistV6 int
+	MapTCPIn       int
+	WhitelistIPs   []string
+	XDPPass        uint64
+	XDPDrop        uint64
+	TCPass         uint64
+	TCDrop         uint64
+	XDPDropDelta   uint64
+	TCDropDelta    uint64
+	Extra          string
 }
 
 func (s Snapshot) format() string {

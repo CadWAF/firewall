@@ -78,9 +78,9 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func (c *Config) AllowPath() string  { return filepath.Join(c.ConfigDir, "firewall.allow") }
-func (c *Config) DenyPath() string   { return filepath.Join(c.ConfigDir, "firewall.deny") }
-func (c *Config) PortsPath() string  { return filepath.Join(c.ConfigDir, "ports.conf") }
+func (c *Config) AllowPath() string { return filepath.Join(c.ConfigDir, "firewall.allow") }
+func (c *Config) DenyPath() string  { return filepath.Join(c.ConfigDir, "firewall.deny") }
+func (c *Config) PortsPath() string { return filepath.Join(c.ConfigDir, "ports.conf") }
 
 type PortsConfig struct {
 	TCPIn          []uint16
