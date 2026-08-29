@@ -95,20 +95,24 @@ type Snapshot struct {
 	MapBlocklistV4 int
 	MapBlocklistV6 int
 	MapTCPIn       int
-	WhitelistIPs   []string
-	XDPPass        uint64
-	XDPDrop        uint64
-	TCPass         uint64
-	TCDrop         uint64
-	XDPDropDelta   uint64
-	TCDropDelta    uint64
-	Extra          string
+	// "native" or "generic". Worth a field of its own: the two differ by
+	// roughly an order of magnitude in throughput and are otherwise
+	// indistinguishable from anywhere except `ip link show`.
+	XDPMode      string
+	WhitelistIPs []string
+	XDPPass      uint64
+	XDPDrop      uint64
+	TCPass       uint64
+	TCDrop       uint64
+	XDPDropDelta uint64
+	TCDropDelta  uint64
+	Extra        string
 }
 
 func (s Snapshot) format() string {
 	return fmt.Sprintf(
-		"uptime=%ds iface=%s wl=%d bl=%d rules=%d tcp_in=%d udp_in=%d tcp_out=%d udp_out=%d map_wl_v4=%d map_wl_v6=%d map_bl_v4=%d map_bl_v6=%d map_tcp_in=%d xdp_pass=%d xdp_drop=%d xdp_drop_delta=%d tc_pass=%d tc_drop=%d tc_drop_delta=%d wl_ips=%q %s",
-		s.UptimeSec, s.Iface,
+		"uptime=%ds iface=%s xdp_mode=%s wl=%d bl=%d rules=%d tcp_in=%d udp_in=%d tcp_out=%d udp_out=%d map_wl_v4=%d map_wl_v6=%d map_bl_v4=%d map_bl_v6=%d map_tcp_in=%d xdp_pass=%d xdp_drop=%d xdp_drop_delta=%d tc_pass=%d tc_drop=%d tc_drop_delta=%d wl_ips=%q %s",
+		s.UptimeSec, s.Iface, s.XDPMode,
 		s.WhitelistN, s.BlocklistN, s.RulesN,
 		s.TCPInN, s.UDPInN, s.TCPOutN, s.UDPOutN,
 		s.MapWhitelistV4, s.MapWhitelistV6, s.MapBlocklistV4, s.MapBlocklistV6, s.MapTCPIn,

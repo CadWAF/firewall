@@ -25,6 +25,7 @@ func (f *Firewall) Attach() error { return fmt.Errorf("requires linux") }
 
 func (f *Firewall) Objects() *FirewallObjects { return nil }
 func (f *Firewall) Iface() string             { return "" }
+func (f *Firewall) XDPMode() string           { return "" }
 func (f *Firewall) Close() error              { return nil }
 func (f *Firewall) Stats() (Stats, error)     { return Stats{}, fmt.Errorf("requires linux") }
 

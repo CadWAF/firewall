@@ -190,10 +190,19 @@ static __always_inline void bump_stats(void *map, int pass)
 	struct pkt_stats *st = bpf_map_lookup_elem(map, &key);
 	if (!st)
 		return;
+	/*
+	 * Plain increments, not __sync_fetch_and_add.
+	 *
+	 * These are PERCPU maps: bpf_map_lookup_elem hands back this CPU's own
+	 * copy, which no other CPU can reach, so there is nothing to race
+	 * against. The atomic compiled to a locked read-modify-write on every
+	 * single packet — bus-locking to protect a value only one CPU can
+	 * touch. The read side already sums the per-CPU values.
+	 */
 	if (pass)
-		__sync_fetch_and_add(&st->pass, 1);
+		st->pass++;
 	else
-		__sync_fetch_and_add(&st->drop, 1);
+		st->drop++;
 }
 
 /* addr is network-byte-order IPv4. */
@@ -351,16 +360,33 @@ static __always_inline int eval_rules(__u8 direction, __u8 proto, __u16 src_port
 		struct fw_rule *rulep = bpf_map_lookup_elem(&rules, &idx);
 		if (!rulep)
 			continue;
+		/*
+		 * Screen on the scalar fields before copying anything.
+		 *
+		 * The whole 68-byte rule used to be copied to the stack up
+		 * front, and then most rules were thrown away by the very first
+		 * check — 68 bytes moved to read one, up to 4 KB of it per
+		 * packet with a full rule set.
+		 *
+		 * The copy cannot be removed entirely: match_ip_rule indexes
+		 * ipv6_addr with a runtime prefix length, and the verifier can
+		 * only bound that against a stack object, not against a map
+		 * value (it rejects the load as "off=76 outside the allowed
+		 * range" for a 68-byte value). So the rules that survive the
+		 * cheap checks still get copied — but those are the few that
+		 * were going to be examined properly anyway.
+		 */
+		if (rulep->direction != direction)
+			continue;
+		if (rulep->proto != FW_PROTO_ANY && rulep->proto != proto)
+			continue;
+		if (rulep->uid_gid_type == FW_UID_GID_UID && uid != rulep->uid_gid)
+			continue;
+		if (rulep->uid_gid_type == FW_UID_GID_GID && gid != rulep->uid_gid)
+			continue;
+
 		struct fw_rule rule;
 		__builtin_memcpy(&rule, rulep, sizeof(rule));
-		if (rule.direction != direction)
-			continue;
-		if (rule.proto != FW_PROTO_ANY && rule.proto != proto)
-			continue;
-		if (rule.uid_gid_type == FW_UID_GID_UID && uid != rule.uid_gid)
-			continue;
-		if (rule.uid_gid_type == FW_UID_GID_GID && gid != rule.uid_gid)
-			continue;
 		if (!match_port_rule(&rule, src_port, dst_port))
 			continue;
 		if (!match_ip_rule(&rule, ip_version, src_v4, dst_v4, src_v6, dst_v6))

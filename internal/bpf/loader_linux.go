@@ -4,6 +4,7 @@ package bpf
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strings"
@@ -19,7 +20,13 @@ type Firewall struct {
 	xdpLink link.Link
 	tcLink  *tcFilter
 	iface   string
+	// "native" or "generic" — reported by diagnostics, because the two differ
+	// by roughly an order of magnitude and look identical from the panel.
+	xdpMode string
 }
+
+// XDPMode reports which XDP hook the program is attached to.
+func (f *Firewall) XDPMode() string { return f.xdpMode }
 
 type tcFilter struct {
 	linkIndex int
@@ -65,15 +72,13 @@ func (f *Firewall) Attach() error {
 		return fmt.Errorf("interface %s: %w", f.iface, err)
 	}
 
-	xdpLink, err := link.AttachXDP(link.XDPOptions{
-		Program:   f.objs.XdpFirewall,
-		Interface: iface.Index,
-		Flags:     link.XDPGenericMode,
-	})
+	xdpLink, mode, err := attachXDPBestMode(f.objs.XdpFirewall, iface.Index)
 	if err != nil {
 		return fmt.Errorf("attach xdp: %w", err)
 	}
 	f.xdpLink = xdpLink
+	f.xdpMode = mode
+	log.Printf("firewall: xdp attached on %s in %s mode", f.iface, mode)
 
 	if os.Getenv("FIREWALL_EGRESS") == "false" {
 		return nil
@@ -91,6 +96,50 @@ func (f *Firewall) Attach() error {
 	}
 	f.tcLink = tc
 	return nil
+}
+
+// attachXDPBestMode prefers the driver's own XDP hook and falls back to the
+// generic one.
+//
+// The mode was pinned to generic, which is the slow path by construction: the
+// packet is already an skb and has been through part of the receive stack
+// before the program runs, so none of XDP's advantage is realised. Driver mode
+// runs inside the NAPI poll before an skb exists.
+//
+// It is a preference rather than a requirement because plenty of setups cannot
+// offer it — virtio_net needs a spare TX queue per CPU for XDP_TX and refuses
+// when the hypervisor hands out fewer queue pairs than the guest has cores,
+// which is the common case on small cloud instances. Failing to attach at all
+// there would turn a performance improvement into an outage.
+//
+// The mode is logged because the difference is roughly an order of magnitude
+// and is otherwise invisible: both look identical in the panel, and only
+// `ip link show` distinguishes them.
+func attachXDPBestMode(prog *ebpf.Program, ifIndex int) (link.Link, string, error) {
+	l, err := link.AttachXDP(link.XDPOptions{
+		Program:   prog,
+		Interface: ifIndex,
+		Flags:     link.XDPDriverMode,
+	})
+	if err == nil {
+		return l, "native", nil
+	}
+	driverErr := err
+
+	l, err = link.AttachXDP(link.XDPOptions{
+		Program:   prog,
+		Interface: ifIndex,
+		Flags:     link.XDPGenericMode,
+	})
+	if err != nil {
+		// Report the driver-mode failure too: on an interface that should
+		// support it, that error is the one worth reading.
+		return nil, "", fmt.Errorf("generic: %w (driver mode also failed: %v)", err, driverErr)
+	}
+
+	log.Printf("firewall: driver-mode xdp unavailable (%v), using generic mode", driverErr)
+
+	return l, "generic", nil
 }
 
 func ensureClsact(iface string) error {

@@ -38,6 +38,7 @@ func (e *Engine) buildSnapshot(trigger string, prevStats bpf.Stats) diag.Snapsho
 		s.WhitelistIPs = append([]string(nil), st.Whitelist...)
 	}
 	if e.fw != nil {
+		s.XDPMode = e.fw.XDPMode()
 		if mc, err := policy.CountMaps(e.fw.Objects()); err == nil {
 			s.MapWhitelistV4 = mc.WhitelistV4
 			s.MapWhitelistV6 = mc.WhitelistV6
