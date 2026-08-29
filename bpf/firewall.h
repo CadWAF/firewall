@@ -361,32 +361,31 @@ static __always_inline int eval_rules(__u8 direction, __u8 proto, __u16 src_port
 		if (!rulep)
 			continue;
 		/*
-		 * Screen on the scalar fields before copying anything.
+		 * The whole rule is copied to the stack before anything is
+		 * read, even though the first check discards most rules.
 		 *
-		 * The whole 68-byte rule used to be copied to the stack up
-		 * front, and then most rules were thrown away by the very first
-		 * check — 68 bytes moved to read one, up to 4 KB of it per
-		 * packet with a full rule set.
+		 * Screening on the scalar fields first and copying only the
+		 * survivors is the obvious improvement and it does not work:
+		 * reading map-value fields inside this unrolled 64-iteration
+		 * loop multiplies the states the verifier has to explore, and
+		 * it gives up at its million-instruction ceiling. It passes on
+		 * arm64 and fails on x86-64, so a check on the wrong
+		 * architecture proves nothing here.
 		 *
-		 * The copy cannot be removed entirely: match_ip_rule indexes
-		 * ipv6_addr with a runtime prefix length, and the verifier can
-		 * only bound that against a stack object, not against a map
-		 * value (it rejects the load as "off=76 outside the allowed
-		 * range" for a 68-byte value). So the rules that survive the
-		 * cheap checks still get copied — but those are the few that
-		 * were going to be examined properly anyway.
+		 * Making this cheaper means changing the shape of the search —
+		 * indexing rules by protocol and port so the loop is short —
+		 * not shaving the body of a linear scan over all 64.
 		 */
-		if (rulep->direction != direction)
-			continue;
-		if (rulep->proto != FW_PROTO_ANY && rulep->proto != proto)
-			continue;
-		if (rulep->uid_gid_type == FW_UID_GID_UID && uid != rulep->uid_gid)
-			continue;
-		if (rulep->uid_gid_type == FW_UID_GID_GID && gid != rulep->uid_gid)
-			continue;
-
 		struct fw_rule rule;
 		__builtin_memcpy(&rule, rulep, sizeof(rule));
+		if (rule.direction != direction)
+			continue;
+		if (rule.proto != FW_PROTO_ANY && rule.proto != proto)
+			continue;
+		if (rule.uid_gid_type == FW_UID_GID_UID && uid != rule.uid_gid)
+			continue;
+		if (rule.uid_gid_type == FW_UID_GID_GID && gid != rule.uid_gid)
+			continue;
 		if (!match_port_rule(&rule, src_port, dst_port))
 			continue;
 		if (!match_ip_rule(&rule, ip_version, src_v4, dst_v4, src_v6, dst_v6))
