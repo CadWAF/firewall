@@ -84,6 +84,40 @@ struct lpm_key_v6 {
 	__u8 addr[16];
 };
 
+/*
+ * Why a packet was refused.
+ *
+ * Aggregate counters answer "how much" and never "who" or "what for", which
+ * is the only question worth asking after an incident. These travel with the
+ * source address so userspace can say "this address, this many times, for
+ * this reason".
+ */
+enum fw_drop_reason {
+	FW_DROP_NONE = 0,
+	FW_DROP_BLOCKLIST = 1,
+	FW_DROP_RULE = 2,
+	FW_DROP_NO_PORT = 3,
+};
+
+/* Key of one refused source. Ports are deliberately absent: a scan walks
+ * thousands of them and would evict everything else from the map. */
+struct drop_key {
+	__u8 ip_version;
+	__u8 reason;
+	__u8 proto;
+	__u8 _pad;
+	__u32 addr_v4;
+	__u8 addr_v6[16];
+};
+
+struct drop_record {
+	__u64 packets;
+	__u64 first_ns;
+	__u64 last_ns;
+	__u16 last_dst_port;
+	__u16 _pad[3];
+};
+
 struct pkt_stats {
 	__u64 pass;
 	__u64 drop;
@@ -170,6 +204,23 @@ struct {
 	__type(value, struct policy_config);
 } policy SEC(".maps");
 
+/*
+ * Refused sources, aggregated in kernel.
+ *
+ * An LRU hash rather than a ring buffer of events: a flood is millions of
+ * packets a second and userspace could not drain one event per packet without
+ * becoming the bottleneck it is meant to measure. Counting per source turns
+ * that same flood into one entry per attacker, which is the shape the answer
+ * wants anyway. LRU because the eviction policy under pressure should be
+ * "forget the quietest", not "stop recording" or "grow without bound".
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, struct drop_key);
+	__type(value, struct drop_record);
+} drop_log SEC(".maps");
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
@@ -203,6 +254,65 @@ static __always_inline void bump_stats(void *map, int pass)
 		st->pass++;
 	else
 		st->drop++;
+}
+
+/*
+ * Records one refusal. Called from a single place in the XDP program: inlined
+ * at each of the ten drop sites it would multiply both the instruction count
+ * and the states the verifier has to walk, and this program has already been
+ * over that ceiling once.
+ */
+/*
+ * Packs the small scalars into one argument. A BPF-to-BPF call passes
+ * arguments in registers and takes at most five; the alternative was building
+ * the key in the caller, which is the part that had to move out of it.
+ */
+#define FW_DROP_META(ipver, reason, proto, dport)                          \
+	(((__u64)(ipver)) | ((__u64)(reason) << 8) | ((__u64)(proto) << 16) \
+	 | ((__u64)(dport) << 32))
+
+/*
+ * Records one refusal.
+ *
+ * Deliberately not inlined. Inlined at the drop exit it is verified once for
+ * every state that reaches it, and every branch of a 64-iteration unrolled
+ * rule loop reaches it — which put the program over the verifier's
+ * million-instruction ceiling and stopped it loading at all. As a call it is
+ * checked on its own.
+ */
+static __noinline void record_drop(__u64 meta, __u32 src_v4, __u8 *src_v6)
+{
+	struct drop_key key = {};
+	key.ip_version = (__u8)(meta & 0xff);
+	key.reason = (__u8)((meta >> 8) & 0xff);
+	key.proto = (__u8)((meta >> 16) & 0xff);
+
+	if (key.ip_version == 4)
+		key.addr_v4 = src_v4;
+	else if (src_v6)
+		__builtin_memcpy(key.addr_v6, src_v6, 16);
+
+	__u16 dst_port = (__u16)((meta >> 32) & 0xffff);
+	__u64 now = bpf_ktime_get_ns();
+
+	struct drop_record *rec = bpf_map_lookup_elem(&drop_log, &key);
+	if (rec) {
+		rec->packets++;
+		rec->last_ns = now;
+		rec->last_dst_port = dst_port;
+		return;
+	}
+
+	struct drop_record fresh = {
+		.packets = 1,
+		.first_ns = now,
+		.last_ns = now,
+		.last_dst_port = dst_port,
+	};
+	/* BPF_NOEXIST: another CPU may have inserted the same key between the
+	 * lookup and here, and losing that race should cost this packet's count
+	 * rather than overwrite the other CPU's record. */
+	bpf_map_update_elem(&drop_log, &key, &fresh, BPF_NOEXIST);
 }
 
 /* addr is network-byte-order IPv4. */

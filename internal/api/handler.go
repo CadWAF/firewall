@@ -47,6 +47,8 @@ func Register(r chi.Router, h *Handler) {
 
 		r.Post("/api/v1/reload", h.reload)
 		r.Get("/api/v1/stats", h.stats)
+
+		r.Get("/api/v1/drops", h.listDrops)
 	})
 }
 

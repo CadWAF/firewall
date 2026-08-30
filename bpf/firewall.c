@@ -62,6 +62,7 @@ int xdp_firewall(struct xdp_md *ctx)
 	__u8 src_v6[16] = {}, dst_v6[16] = {};
 	__u16 src_port = 0, dst_port = 0;
 	void *l4_ptr = 0;
+	__u8 drop_reason = FW_DROP_NONE;
 
 	if (h_proto == ETH_P_IP) {
 		struct iphdr *ip = l3;
@@ -154,8 +155,8 @@ int xdp_firewall(struct xdp_md *ctx)
 		}
 		if (ip4_in_lpm(&blocklist_v4, src_v4) ||
 		    ip4_in_lpm(&blocklist_v4, dst_v4)) {
-			bump_stats(&xdp_stats, 0);
-			return XDP_DROP;
+			drop_reason = FW_DROP_BLOCKLIST;
+			goto drop;
 		}
 	} else if (ip_version == 6) {
 		if (ip6_in_lpm(&whitelist_v6, src_v6) ||
@@ -165,8 +166,8 @@ int xdp_firewall(struct xdp_md *ctx)
 		}
 		if (ip6_in_lpm(&blocklist_v6, src_v6) ||
 		    ip6_in_lpm(&blocklist_v6, dst_v6)) {
-			bump_stats(&xdp_stats, 0);
-			return XDP_DROP;
+			drop_reason = FW_DROP_BLOCKLIST;
+			goto drop;
 		}
 	}
 
@@ -186,8 +187,8 @@ int xdp_firewall(struct xdp_md *ctx)
 		return XDP_PASS;
 	}
 	if (rule_action == FW_ACTION_DROP) {
-		bump_stats(&xdp_stats, 0);
-		return XDP_DROP;
+		drop_reason = FW_DROP_RULE;
+		goto drop;
 	}
 
 	/* Established TCP (ACK) and UDP replies from allowed service ports. */
@@ -213,6 +214,14 @@ int xdp_firewall(struct xdp_md *ctx)
 		return XDP_PASS;
 	}
 
+	drop_reason = FW_DROP_NO_PORT;
+
+drop:
+	/* The one place a refused packet leaves the program. Every branch above
+	 * arrives here with the reason it decided on, so the recording exists
+	 * once rather than at each site. */
+	record_drop(FW_DROP_META(ip_version, drop_reason, proto, dst_port),
+		    src_v4, src_v6);
 	bump_stats(&xdp_stats, 0);
 	return XDP_DROP;
 }

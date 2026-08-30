@@ -6,6 +6,7 @@
 
 #define NULL ((void *)0)
 #define __always_inline inline __attribute__((always_inline))
+#define __noinline __attribute__((noinline))
 
 #define SEC(NAME) __attribute__((section(NAME), used))
 
@@ -17,6 +18,9 @@ static void *(*bpf_map_lookup_elem)(void *map, const void *key) =
 	(void *)BPF_FUNC_map_lookup_elem;
 static int (*bpf_map_update_elem)(void *map, const void *key, const void *value,
 				  unsigned long long flags) = (void *)BPF_FUNC_map_update_elem;
+static int (*bpf_map_delete_elem)(void *map, const void *key) =
+	(void *)BPF_FUNC_map_delete_elem;
+static __u64 (*bpf_ktime_get_ns)(void) = (void *)BPF_FUNC_ktime_get_ns;
 static long long (*bpf_trace_printk)(const char *fmt, unsigned int fmt_size, ...) =
 	(void *)BPF_FUNC_trace_printk;
 static long long (*bpf_get_socket_uid)(struct __sk_buff *skb) =

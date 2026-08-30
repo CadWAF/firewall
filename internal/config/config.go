@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/huzenkon/waf-firewall/internal/ports"
 )
@@ -18,15 +19,27 @@ type Config struct {
 	ListenAddr string
 	APIKey     string
 	Iface      string
+
+	// Where refused sources are kept. Empty disables recording entirely: on a
+	// node with no disk to spare, counting is still useful and the file is not.
+	DropLogPath string
+
+	// How long a refused source stays on record after it goes quiet.
+	DropRetention time.Duration
 }
+
+// DropLogEnabled reports whether refusals are written to disk.
+func (c *Config) DropLogEnabled() bool { return c.DropLogPath != "" }
 
 func Load() (*Config, error) {
 	LoadEnvFile(DefaultEnvPath())
 	cfg := &Config{
-		ConfigDir:  envOr("FIREWALL_CONFIG_DIR", "/etc/firewall"),
-		ListenAddr: envOr("FIREWALL_LISTEN_ADDR", "127.0.0.1:9090"),
-		APIKey:     os.Getenv("FIREWALL_API_TOKEN"),
-		Iface:      os.Getenv("FIREWALL_IFACE"),
+		ConfigDir:     envOr("FIREWALL_CONFIG_DIR", "/etc/firewall"),
+		ListenAddr:    envOr("FIREWALL_LISTEN_ADDR", "127.0.0.1:9090"),
+		APIKey:        os.Getenv("FIREWALL_API_TOKEN"),
+		Iface:         os.Getenv("FIREWALL_IFACE"),
+		DropLogPath:   dropLogPath(),
+		DropRetention: dropRetention(),
 	}
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("FIREWALL_API_TOKEN is required")
@@ -42,10 +55,12 @@ func DefaultEnvPath() string {
 func LoadCLI() (*Config, error) {
 	LoadEnvFile(DefaultEnvPath())
 	return &Config{
-		ConfigDir:  envOr("FIREWALL_CONFIG_DIR", "/etc/firewall"),
-		ListenAddr: envOr("FIREWALL_LISTEN_ADDR", "127.0.0.1:9090"),
-		APIKey:     os.Getenv("FIREWALL_API_TOKEN"),
-		Iface:      os.Getenv("FIREWALL_IFACE"),
+		ConfigDir:     envOr("FIREWALL_CONFIG_DIR", "/etc/firewall"),
+		ListenAddr:    envOr("FIREWALL_LISTEN_ADDR", "127.0.0.1:9090"),
+		APIKey:        os.Getenv("FIREWALL_API_TOKEN"),
+		Iface:         os.Getenv("FIREWALL_IFACE"),
+		DropLogPath:   dropLogPath(),
+		DropRetention: dropRetention(),
 	}, nil
 }
 
@@ -140,4 +155,30 @@ func SavePorts(path string, pc *PortsConfig) error {
 	fmt.Fprintf(&b, "\n# Always allow loopback traffic\n")
 	fmt.Fprintf(&b, "allow_localhost = %t\n", pc.AllowLocalhost)
 	return os.WriteFile(path, []byte(b.String()), 0644)
+}
+
+// dropLogPath defaults to a file beside the other firewall state. Set
+// FIREWALL_DROP_LOG=off to turn recording off.
+func dropLogPath() string {
+	v := strings.TrimSpace(os.Getenv("FIREWALL_DROP_LOG"))
+	switch strings.ToLower(v) {
+	case "off", "false", "0", "none":
+		return ""
+	case "":
+		return "/var/lib/firewall/drops.sqlite"
+	default:
+		return v
+	}
+}
+
+func dropRetention() time.Duration {
+	v := strings.TrimSpace(os.Getenv("FIREWALL_DROP_RETENTION"))
+	if v == "" {
+		return 14 * 24 * time.Hour
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 14 * 24 * time.Hour
+	}
+	return d
 }

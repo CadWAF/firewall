@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/huzenkon/waf-firewall/internal/bpf"
 	"github.com/huzenkon/waf-firewall/internal/config"
 	"github.com/huzenkon/waf-firewall/internal/diag"
+	"github.com/huzenkon/waf-firewall/internal/drops"
 	"github.com/huzenkon/waf-firewall/internal/policy"
 )
 
@@ -26,6 +28,18 @@ type Engine struct {
 	startedAt time.Time
 	lastSnap  diag.Snapshot
 	lastStats bpf.Stats
+
+	dropStore *drops.Store
+	dropStop  context.CancelFunc
+}
+
+// Drops exposes the record of refused sources, or nil when recording is off.
+func (e *Engine) Drops() *drops.Store {
+	if e == nil {
+		return nil
+	}
+
+	return e.dropStore
 }
 
 func New(cfg *config.Config) (*Engine, error) {
@@ -73,6 +87,21 @@ func New(cfg *config.Config) (*Engine, error) {
 	log.Printf("firewall policy loaded: whitelist=%d blocklist=%d rules=%d iface=%s",
 		len(st.Whitelist), len(st.Blocklist), len(st.Rules), cfg.Iface)
 	e.logSnapshot(diag.EventStartup, "engine_start")
+	// Recording is best-effort: a node that cannot open the file should keep
+	// filtering packets, which is its actual job. The failure is logged and
+	// the API reports the feature as unavailable rather than erroring.
+	if cfg.DropLogEnabled() {
+		if store, err := drops.Open(cfg.DropLogPath); err != nil {
+			log.Printf("firewall: drop log disabled: %v", err)
+		} else {
+			e.dropStore = store
+			ctx, cancel := context.WithCancel(context.Background())
+			e.dropStop = cancel
+			go drops.NewDrainer(store, fw.Objects(), 15*time.Second, cfg.DropRetention).Run(ctx)
+			log.Printf("firewall: recording refused sources to %s", cfg.DropLogPath)
+		}
+	}
+
 	go e.watchConfig()
 	go e.periodicDiag()
 	go e.periodicMapRefresh()
@@ -187,6 +216,18 @@ func (e *Engine) Config() *config.Config  { return e.cfg }
 
 func (e *Engine) Close() error {
 	e.stopOnce.Do(func() { close(e.stopCh) })
+
+	// Stopped before the maps go away: the drainer's final pass reads them,
+	// and it must finish before fw.Close() takes them out from under it.
+	if e.dropStop != nil {
+		e.dropStop()
+	}
+	if e.dropStore != nil {
+		if err := e.dropStore.Close(); err != nil {
+			log.Printf("firewall: closing drop log: %v", err)
+		}
+	}
+
 	return e.fw.Close()
 }
 
