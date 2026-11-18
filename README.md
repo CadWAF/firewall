@@ -32,7 +32,7 @@ services.
 - [Diagnostics](#diagnostics)
 - [Emergency recovery](#emergency-recovery)
 - [Development](#development)
-- [Releases](#releases)
+- [CI, testing and releases](#ci-testing-and-releases)
 - [License](#license)
 
 ---
@@ -67,13 +67,15 @@ own and they compose into a full edge:
 
 | Component | Role |
 |-----------|------|
-| [admin-panel](https://github.com/Revabrio/admin-panel) | Control plane — canonical config, users, analytics (Laravel + React) |
-| [waf-filter](https://github.com/Revabrio/waf-filter) | Autonomous edge node — Caddy + WAF / anti-DDoS plugins |
-| [balancer](https://github.com/Revabrio/balancer) | HAProxy in front of several edges, preserving the visitor's address |
+| admin-panel *(private)* | Control plane — canonical config, users, analytics (Laravel + React) |
+| waf-filter *(private)* | Autonomous edge node — Caddy + WAF / anti-DDoS plugins |
+| balancer *(private)* | HAProxy in front of several edges, preserving the visitor's address |
 | **firewall** *(this repo)* | Host-level eBPF/XDP packet firewall — default-deny, port ACLs |
 
+> The other CadWAF components are **not publicly available** — this firewall is the only open repository. The rows above describe where it sits in the platform; the private components are not required to run it.
+
 The firewall sits **beneath** everything else on a host. Run it on an edge node
-under Caddy, or — when a [balancer](https://github.com/Revabrio/balancer) fronts
+under Caddy, or — when a balancer fronts
 the cluster and the edges no longer see real client addresses — run it on the
 balancer host, where packet-level filtering then belongs.
 
@@ -276,15 +278,26 @@ runtime): `brew install llvm`.
 
 ---
 
-## Releases
+## CI, testing and releases
 
-| Workflow | Trigger | Result |
-|----------|---------|--------|
-| **CI** | Push / PR to `dev` | bpf2go generate, build, `go test ./...` |
-| **Release** | Tag `v*.*.*` | Linux amd64 + arm64 binary tarballs on GitHub Releases |
+Everything is automated with GitHub Actions. **The workflows run only while the
+repository is public** (`if: ${{ !github.event.repository.private }}`), so a
+private mirror spends no Actions minutes.
+
+| Workflow | Trigger | What it does |
+|----------|---------|--------------|
+| **CI** | Push / PR to `dev` or `main` | Installs the BPF toolchain, `make generate && make build` (bpf2go), and runs the full `go test ./...` suite |
+| **Release** | Tag `v*.*.*` | Builds Linux `amd64` + `arm64`, stamps the tag into the binary (`-version`), packages tarballs, and publishes a GitHub Release automatically |
+
+Cutting a release is one command — the version is taken from the tag:
+
+```bash
+git tag v0.3.0 && git push origin v0.3.0
+```
 
 Each release tarball contains `firewalld`, `firewallctl`, example configs and
-`docs/API.md`.
+`docs/API.md`. The in-tree default version is `0.3.0`
+(`internal/config/config.go`); a tagged build overrides it with the tag.
 
 ---
 
