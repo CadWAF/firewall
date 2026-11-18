@@ -2,6 +2,8 @@
 
 # CadWAF Firewall
 
+**CadWAF — Customizable Attack Defense Web Application Firewall.**
+
 **A CSF-style host firewall for Linux, enforced in the kernel with eBPF/XDP.**
 Default-deny inbound and outbound, IP allow/deny lists, per-port access control,
 hot reload, a REST API and a CLI — filtering every packet before it reaches your
@@ -11,7 +13,7 @@ services.
 ![Platform](https://img.shields.io/badge/platform-Linux-informational)
 ![Kernel](https://img.shields.io/badge/kernel-%E2%89%A5%205.10-informational)
 ![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go&logoColor=white)
-[![CI](https://github.com/Revabrio/firewall/actions/workflows/ci.yml/badge.svg)](https://github.com/Revabrio/firewall/actions/workflows/ci.yml)
+[![CI](https://github.com/CadWAF/firewall/actions/workflows/ci.yml/badge.svg)](https://github.com/CadWAF/firewall/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-Proprietary-red.svg)
 
 </div>
@@ -21,7 +23,6 @@ services.
 ## Contents
 
 - [What it is](#what-it-is)
-- [Where this fits — the CadWAF platform](#where-this-fits--the-cadwaf-platform)
 - [How it works](#how-it-works)
 - [Requirements](#requirements)
 - [Install](#install)
@@ -45,8 +46,8 @@ so traffic is judged in the kernel — before the socket layer, before Docker,
 before anything you run. It is deliberately CSF-like in feel: two text files for
 allow/deny, one for ports, hot-reloaded on change.
 
-It is an **optional, independent** layer. It has no dependency on the rest of the
-CadWAF stack and is useful on any Linux host on its own.
+It is a **self-contained, independent** layer with no external dependencies —
+useful on any Linux host on its own.
 
 **What it gives you**
 
@@ -57,27 +58,6 @@ CadWAF stack and is useful on any Linux host on its own.
 - **Hot reload** via a config-file watcher — no traffic blackout on refresh.
 - A **REST API** for integrations and a **`firewallctl`** CLI.
 - Built-in **diagnostics** and a tested **emergency recovery** path.
-
----
-
-## Where this fits — the CadWAF platform
-
-CadWAF is a self-hosted WAF and DDoS-protection stack. Each component runs on its
-own and they compose into a full edge:
-
-| Component | Role |
-|-----------|------|
-| admin-panel *(private)* | Control plane — canonical config, users, analytics (Laravel + React) |
-| waf-filter *(private)* | Autonomous edge node — Caddy + WAF / anti-DDoS plugins |
-| balancer *(private)* | HAProxy in front of several edges, preserving the visitor's address |
-| **firewall** *(this repo)* | Host-level eBPF/XDP packet firewall — default-deny, port ACLs |
-
-> The other CadWAF components are **not publicly available** — this firewall is the only open repository. The rows above describe where it sits in the platform; the private components are not required to run it.
-
-The firewall sits **beneath** everything else on a host. Run it on an edge node
-under Caddy, or — when a balancer fronts
-the cluster and the edges no longer see real client addresses — run it on the
-balancer host, where packet-level filtering then belongs.
 
 ---
 
@@ -112,7 +92,7 @@ symptom being hourly veth/bridge churn in the kernel log.
 ### Guided (recommended)
 
 ```bash
-git clone https://github.com/Revabrio/firewall.git
+git clone https://github.com/CadWAF/firewall.git
 cd firewall
 sudo ./scripts/setup-firewall.sh
 ```
@@ -286,18 +266,22 @@ private mirror spends no Actions minutes.
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| **CI** | Push / PR to `dev` or `main` | Installs the BPF toolchain, `make generate && make build` (bpf2go), and runs the full `go test ./...` suite |
-| **Release** | Tag `v*.*.*` | Builds Linux `amd64` + `arm64`, stamps the tag into the binary (`-version`), packages tarballs, and publishes a GitHub Release automatically |
+| **CI** | Push to `dev`, or PR to `dev` / `main` | Installs the BPF toolchain, `make generate && make build` (bpf2go), and runs the full `go test ./...` suite |
+| **Release** | Push to `main` | Reads the version from `internal/config/config.go`, and if that version is not yet tagged: runs the tests, builds Linux `amd64` + `arm64`, stamps the version into the binary, packages tarballs, creates the `v*` tag and publishes a GitHub Release automatically |
 
-Cutting a release is one command — the version is taken from the tag:
+Branches:
 
-```bash
-git tag v0.3.0 && git push origin v0.3.0
-```
+- **`main`** is the release branch. **`dev`** is for integration — push there, or
+  open a pull request, and only the tests run.
+- Cutting a release takes **no manual tag**. Bump `Version` in
+  [`internal/config/config.go`](internal/config/config.go), land it on `main`,
+  and the pipeline tags `v<version>` and publishes the release. A push to `main`
+  whose version is already tagged publishes nothing, so ordinary commits don't
+  cut releases.
 
 Each release tarball contains `firewalld`, `firewallctl`, example configs and
-`docs/API.md`. The in-tree default version is `0.3.0`
-(`internal/config/config.go`); a tagged build overrides it with the tag.
+`docs/API.md`. The release never publishes code that fails its tests — the
+pipeline runs `go test ./...` before it builds.
 
 ---
 
