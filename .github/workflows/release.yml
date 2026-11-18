@@ -1,19 +1,58 @@
 name: Release
 
+# Releases are cut from pushes to the main branch. The version is read from
+# internal/config/config.go; a push only publishes when that version has not
+# been tagged yet, so day-to-day commits to main don't produce a release —
+# bump Version, push to main, and the tag + GitHub release follow automatically.
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches: [main]
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  check:
+    name: Decide whether to release
+    runs-on: ubuntu-latest
+    # Publish releases only while the repository is public. The other CadWAF
+    # components are private; this keeps the release pipeline from running on a
+    # private mirror and matches the project's "public repo only" policy.
+    if: ${{ !github.event.repository.private }}
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need the full tag history to tell if this version shipped
+
+      - name: Read version and check whether it is already tagged
+        id: v
+        run: |
+          VERSION="$(sed -n 's/.*Version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' internal/config/config.go | head -n1)"
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not read Version from internal/config/config.go"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "Tag v$VERSION already exists — nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New version v$VERSION — will build and publish a release."
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
     name: Build ${{ matrix.goarch }}
+    needs: check
+    if: ${{ needs.check.outputs.release == 'true' }}
     runs-on: ubuntu-latest
-    # Publish releases only while the repository is public.
-    if: ${{ !github.event.repository.private }}
     strategy:
       matrix:
         goarch: [amd64, arm64]
@@ -30,11 +69,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev "linux-headers-$(uname -r)"
 
+      - name: Generate BPF
+        run: make generate
+
+      - name: Run tests
+        # A release is never published from code that fails its tests, regardless
+        # of CI timing on the same commit.
+        run: go test ./... -count=1
+
       - name: Build binaries
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ needs.check.outputs.version }}"
           LDFLAGS="-s -w -X github.com/huzenkon/waf-firewall/internal/config.Version=${VERSION}"
-          make generate
           CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} \
             go build -buildvcs=false -ldflags "${LDFLAGS}" -o bin/firewalld ./cmd/firewalld
           CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} \
@@ -42,7 +88,7 @@ jobs:
 
       - name: Package release tarball
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${{ needs.check.outputs.version }}"
           ARCH="${{ matrix.goarch }}"
           PKG="waf-firewall-${VERSION}-linux-${ARCH}"
           mkdir -p "${PKG}/configs" "${PKG}/docs"
@@ -59,19 +105,30 @@ jobs:
           path: waf-firewall-*.tar.gz
 
   release:
-    name: Publish GitHub Release
-    needs: build
+    name: Tag and publish v${{ needs.check.outputs.version }}
+    needs: [check, build]
+    if: ${{ needs.check.outputs.release == 'true' }}
     runs-on: ubuntu-latest
-    if: ${{ !github.event.repository.private }}
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
 
-      - name: Create GitHub Release
+      - name: Create and push tag v${{ needs.check.outputs.version }}
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          git tag "v${VERSION}" "${GITHUB_SHA}"
+          git push origin "v${VERSION}"
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.check.outputs.version }}
+          name: v${{ needs.check.outputs.version }}
           generate_release_notes: true
           files: artifacts/*.tar.gz
           body: |
