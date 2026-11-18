@@ -11,7 +11,7 @@ services.
 
 ![Version](https://img.shields.io/badge/version-0.3.0-success)
 ![Platform](https://img.shields.io/badge/platform-Linux-informational)
-![Kernel](https://img.shields.io/badge/kernel-%E2%89%A5%205.10-informational)
+![Kernel](https://img.shields.io/badge/kernel-%E2%89%A5%205.17-informational)
 ![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8?logo=go&logoColor=white)
 [![CI](https://github.com/CadWAF/firewall/actions/workflows/ci.yml/badge.svg)](https://github.com/CadWAF/firewall/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-Proprietary-red.svg)
@@ -81,7 +81,7 @@ symptom being hourly veth/bridge churn in the kernel log.
 | Requirement | Notes |
 |-------------|-------|
 | **OS** | Linux only |
-| **Kernel** | ≥ 5.10 |
+| **Kernel** | ≥ 5.17 (the rule scan uses the `bpf_loop` helper) |
 | **Build** | clang, llvm, libbpf-dev, linux-headers, Go 1.23+, make |
 | **Runtime** | systemd, iproute2 (`ip`, `tc`), root / `CAP_BPF` |
 

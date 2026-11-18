@@ -380,19 +380,28 @@ static __always_inline int ip6_prefix_match(__u8 target[16], __u32 rule_v6[4],
 {
 	__u32 full_bytes = prefixlen / 8;
 	__u32 rem_bits = prefixlen % 8;
+	__u8 mask = rem_bits ? (__u8)((0xFF << (8 - rem_bits)) & 0xFF) : 0;
 
+	/*
+	 * Fully unrolled over all 16 bytes so the index is a compile-time
+	 * constant — target[i] and rule_v6[i>>2] are then constant stack
+	 * offsets. full_bytes/rem_bits are runtime scalars used only in the
+	 * comparisons, never as an index, so there is no variable-offset stack
+	 * read for the verifier to reject.
+	 */
 #pragma unroll
 	for (int i = 0; i < 16; i++) {
-		if ((__u32)i >= full_bytes)
-			break;
-		if (target[i] != rule_v6_byte(rule_v6, i))
-			return 0;
+		__u8 rb = rule_v6_byte(rule_v6, i);
+		if ((__u32)i < full_bytes) {
+			if (target[i] != rb)
+				return 0;
+		} else if ((__u32)i == full_bytes && rem_bits != 0) {
+			if ((target[i] & mask) != (rb & mask))
+				return 0;
+		}
+		/* i > full_bytes: byte lies outside the prefix — ignore. */
 	}
-	if (rem_bits == 0)
-		return 1;
-	__u8 mask = (0xFF << (8 - rem_bits)) & 0xFF;
-	return (target[full_bytes] & mask) ==
-	       (rule_v6_byte(rule_v6, full_bytes) & mask);
+	return 1;
 }
 
 static __always_inline int match_ip_rule(struct fw_rule *rule, __u8 ip_version,
@@ -437,40 +446,116 @@ static __always_inline int match_port_rule(struct fw_rule *rule, __u16 src_port,
 		return 1;
 
 	__u16 target = rule->port_spec == FW_PORT_SRC ? src_port : dst_port;
+	/*
+	 * Fixed count, fully unrolled, so i is a compile-time constant and
+	 * rule->ports[i] is a constant stack offset. A data-dependent `break`
+	 * would keep i a runtime value — a variable-offset stack read, which the
+	 * verifier rejects now that the enclosing scan is a real bpf_loop rather
+	 * than unrolled. The i < port_count guard replaces the break.
+	 */
 #pragma unroll
 	for (int i = 0; i < MAX_PORTS_PER_RULE; i++) {
-		if ((__u32)i >= rule->port_count)
-			break;
-		if (rule->ports[i] == target)
+		if ((__u32)i < rule->port_count && rule->ports[i] == target)
 			return 1;
 	}
 	return 0;
 }
 
 /*
+ * bpf_loop() is BPF helper #181. It is declared here as a direct helper pointer
+ * (exactly as libbpf's generated bpf_helper_defs.h does) so the program builds
+ * against headers that predate the helper — e.g. the older libbpf that ships
+ * with Homebrew llvm on macOS, where `bpf_loop` is otherwise undeclared. The
+ * private name avoids any clash with a newer header that also provides it. The
+ * helper needs kernel >= 5.17 at load time.
+ */
+static long (*fw_bpf_loop)(__u32 nr_loops, void *callback_fn,
+			   void *callback_ctx, __u64 flags) = (void *)181;
+
+/*
+ * Per-rule scan state handed to the bpf_loop() callback. The packet's IPv6
+ * addresses are copied in by value (callers pass pointers to 16-byte stack
+ * buffers), so the callback reads only this stack struct and never a packet
+ * pointer — which keeps it trivially verifiable.
+ */
+struct rule_scan_ctx {
+	__u8 direction;
+	__u8 proto;
+	__u8 ip_version;
+	__u16 src_port;
+	__u16 dst_port;
+	__u32 src_v4;
+	__u32 dst_v4;
+	__u32 uid;
+	__u32 gid;
+	__u8 src_v6[16];
+	__u8 dst_v6[16];
+	__u32 max;
+	int action;   /* output: action of the first matching rule */
+	__u8 matched; /* output: set once a rule matches */
+};
+
+/*
+ * One iteration of the rule scan, run by bpf_loop(). Return 1 to stop (a rule
+ * matched, or the index reached the active rule count), 0 to continue. The
+ * verifier checks this body ONCE regardless of how many times it runs, which
+ * is the whole point: a plain 64-iteration C loop over this same body — a map
+ * lookup, a full rule copy, the nested port/IP matches and several branches —
+ * makes the verifier walk every iteration and blows past its
+ * million-instruction complexity ceiling, whether the loop is unrolled or
+ * rolled (verified: v0.3.2 unrolled and v0.3.3 rolled both failed at load with
+ * "Processed 1000001 insn").
+ */
+static long rule_scan_cb(__u32 i, void *vctx)
+{
+	struct rule_scan_ctx *c = vctx;
+	if (i >= c->max)
+		return 1;
+
+	__u32 idx = i;
+	struct fw_rule *rulep = bpf_map_lookup_elem(&rules, &idx);
+	if (!rulep)
+		return 0;
+
+	struct fw_rule rule;
+	__builtin_memcpy(&rule, rulep, sizeof(rule));
+	if (rule.direction != c->direction)
+		return 0;
+	if (rule.proto != FW_PROTO_ANY && rule.proto != c->proto)
+		return 0;
+	if (rule.uid_gid_type == FW_UID_GID_UID && c->uid != rule.uid_gid)
+		return 0;
+	if (rule.uid_gid_type == FW_UID_GID_GID && c->gid != rule.uid_gid)
+		return 0;
+	if (!match_port_rule(&rule, c->src_port, c->dst_port))
+		return 0;
+	if (!match_ip_rule(&rule, c->ip_version, c->src_v4, c->dst_v4,
+			   c->src_v6, c->dst_v6))
+		return 0;
+
+	c->action = rule.action;
+	c->matched = 1;
+	return 1;
+}
+
+/*
  * Evaluated in its own bpf-to-bpf frame rather than inlined into the XDP/TC
- * entry. Inlined, the 64-rule scan and its per-rule stack copy land in
- * the caller's frame (~376 bytes), and on the drop path the verifier adds that
- * to record_drop's frame — 576 bytes combined, past the 512-byte ceiling, so
- * the program is rejected at load. As its own call the scan's stack is counted
- * separately and the entry frame stays small. A bpf-to-bpf call takes at most
- * five arguments, so the eleven scalars are packed into three words plus the
- * two IPv6 pointers; the __always_inline wrapper below keeps the call sites
- * unchanged.
+ * entry: inlined, the per-rule stack copy lands in the caller's frame and, on
+ * the drop path, is summed with record_drop's frame past the 512-byte stack
+ * ceiling. As its own call the scan's stack is counted separately and the
+ * entry frame stays small. The eleven scalars are packed into three words plus
+ * the two IPv6 pointers; the __always_inline wrapper below keeps the call
+ * sites unchanged.
+ *
+ * The scan runs through bpf_loop() (kernel >= 5.17), not a C loop: this program
+ * overruns the verifier's million-instruction ceiling when it has to walk a
+ * 64-iteration scan over the body above, so bpf_loop() verifies that body once
+ * and runs the iterations at runtime — verification cost no longer scales with
+ * the rule limit.
  */
 static __noinline int eval_rules_scan(__u64 meta, __u64 v4, __u64 uidgid,
 				      __u8 *src_v6, __u8 *dst_v6)
 {
-	__u8 direction = (__u8)(meta & 0xff);
-	__u8 proto = (__u8)((meta >> 8) & 0xff);
-	__u8 ip_version = (__u8)((meta >> 16) & 0xff);
-	__u16 src_port = (__u16)((meta >> 24) & 0xffff);
-	__u16 dst_port = (__u16)((meta >> 40) & 0xffff);
-	__u32 src_v4 = (__u32)(v4 & 0xffffffff);
-	__u32 dst_v4 = (__u32)(v4 >> 32);
-	__u32 uid = (__u32)(uidgid & 0xffffffff);
-	__u32 gid = (__u32)(uidgid >> 32);
-
 	__u32 count_key = 0;
 	__u32 *count = bpf_map_lookup_elem(&rule_count, &count_key);
 	if (!count || *count == 0)
@@ -480,49 +565,25 @@ static __noinline int eval_rules_scan(__u64 meta, __u64 v4, __u64 uidgid,
 	if (max > BPF_EVAL_RULE_LIMIT)
 		max = BPF_EVAL_RULE_LIMIT;
 
-	/*
-	 * NOT unrolled — this is the fix for "BPF program is too large.
-	 * Processed 1000001 insn". Fully unrolling this 64-iteration scan emits
-	 * 64 copies of the body, each with the nested port/IP matches and several
-	 * branches; the verifier walks every path through all of them and exceeds
-	 * its million-instruction complexity ceiling, so the program is rejected
-	 * at load and firewalld never comes up. As a real bounded loop the body is
-	 * verified once and the induction variable is tracked, which keeps the
-	 * processed-instruction count far below the ceiling. Bounded loops are
-	 * supported since kernel 5.3; this project requires >= 5.10.
-	 */
-#pragma clang loop unroll(disable)
-	for (int i = 0; i < BPF_EVAL_RULE_LIMIT; i++) {
-		if ((__u32)i >= max)
-			break;
-		__u32 idx = (__u32)i;
-		struct fw_rule *rulep = bpf_map_lookup_elem(&rules, &idx);
-		if (!rulep)
-			continue;
-		/*
-		 * The whole rule is copied to the stack before any field is
-		 * read. With the scan no longer unrolled the body is verified
-		 * once, so the copy is cheap. If 64 linear rules is ever too
-		 * few, the real scaling win is to index rules by protocol and
-		 * port so the loop is short — not to shave this body.
-		 */
-		struct fw_rule rule;
-		__builtin_memcpy(&rule, rulep, sizeof(rule));
-		if (rule.direction != direction)
-			continue;
-		if (rule.proto != FW_PROTO_ANY && rule.proto != proto)
-			continue;
-		if (rule.uid_gid_type == FW_UID_GID_UID && uid != rule.uid_gid)
-			continue;
-		if (rule.uid_gid_type == FW_UID_GID_GID && gid != rule.uid_gid)
-			continue;
-		if (!match_port_rule(&rule, src_port, dst_port))
-			continue;
-		if (!match_ip_rule(&rule, ip_version, src_v4, dst_v4, src_v6, dst_v6))
-			continue;
-		return rule.action;
-	}
-	return 0;
+	struct rule_scan_ctx c = {};
+	c.direction = (__u8)(meta & 0xff);
+	c.proto = (__u8)((meta >> 8) & 0xff);
+	c.ip_version = (__u8)((meta >> 16) & 0xff);
+	c.src_port = (__u16)((meta >> 24) & 0xffff);
+	c.dst_port = (__u16)((meta >> 40) & 0xffff);
+	c.src_v4 = (__u32)(v4 & 0xffffffff);
+	c.dst_v4 = (__u32)(v4 >> 32);
+	c.uid = (__u32)(uidgid & 0xffffffff);
+	c.gid = (__u32)(uidgid >> 32);
+	if (src_v6)
+		__builtin_memcpy(c.src_v6, src_v6, 16);
+	if (dst_v6)
+		__builtin_memcpy(c.dst_v6, dst_v6, 16);
+	c.max = max;
+
+	/* nr_loops = max (<= 64); the callback also guards i >= max defensively. */
+	fw_bpf_loop(max, rule_scan_cb, &c, 0);
+	return c.matched ? c.action : 0;
 }
 
 /*

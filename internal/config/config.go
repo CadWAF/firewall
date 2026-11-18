@@ -15,7 +15,7 @@ import (
 // Version is the daemon version. Overridden at release build time via
 // -ldflags "-X .../internal/config.Version=<tag>"; the default tracks the
 // source tree between releases.
-var Version = "0.3.3"
+var Version = "0.3.4"
 
 type Config struct {
 	ConfigDir  string

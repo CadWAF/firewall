@@ -32,8 +32,8 @@ die() { echo "error: $*" >&2; exit 1; }
 
 kernel_major=$(uname -r | cut -d. -f1)
 kernel_minor=$(uname -r | cut -d. -f2)
-if (( kernel_major < 5 || (kernel_major == 5 && kernel_minor < 10) )); then
-  die "kernel >= 5.10 required (found $(uname -r))"
+if (( kernel_major < 5 || (kernel_major == 5 && kernel_minor < 17) )); then
+  die "kernel >= 5.17 required (found $(uname -r))"
 fi
 
 [[ -x "${SCRIPT_DIR}/firewalld" && -x "${SCRIPT_DIR}/firewallctl" ]] \

@@ -18,8 +18,8 @@ fi
 
 kernel_major=$(uname -r | cut -d. -f1)
 kernel_minor=$(uname -r | cut -d. -f2)
-if (( kernel_major < 5 || (kernel_major == 5 && kernel_minor < 10) )); then
-  echo "Kernel >= 5.10 required (found $(uname -r))." >&2
+if (( kernel_major < 5 || (kernel_major == 5 && kernel_minor < 17) )); then
+  echo "Kernel >= 5.17 required (found $(uname -r))." >&2
   exit 1
 fi
 
