@@ -22,15 +22,19 @@ jobs:
     # are private; this keeps Actions minutes from being spent on a private
     # mirror and matches the project's "public repo only" policy.
     if: ${{ !github.event.repository.private }}
+    env:
+      # This workflow deliberately uses NO third-party actions (no `uses:`), so
+      # it passes under the CadWAF org policy that only permits actions owned by
+      # the org. Checkout is a plain git fetch of the pushed/PR commit; Go is the
+      # version preinstalled on the runner image.
+      GH_TOKEN: ${{ github.token }}
     steps:
-      # Actions are pinned to full-length commit SHAs to satisfy the CadWAF
-      # org policy (only GitHub-owned, SHA-pinned actions are permitted).
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version: "1.23"
-          cache-dependency-path: go.sum
+      - name: Check out ${{ github.sha }}
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
 
       - name: Install BPF build dependencies
         run: |
@@ -38,7 +42,9 @@ jobs:
           sudo apt-get install -y clang llvm libbpf-dev "linux-headers-$(uname -r)"
 
       - name: Generate BPF and build
-        run: make generate && make build
+        run: |
+          go version
+          make generate && make build
 
       - name: Run tests
         run: go test ./... -count=1

@@ -4,6 +4,11 @@ name: Release
 # internal/config/config.go; a push only publishes when that version has not
 # been tagged yet, so day-to-day commits to main don't produce a release —
 # bump Version, push to main, and the tag + GitHub release follow automatically.
+#
+# This workflow deliberately uses NO third-party actions (no `uses:`), so it
+# passes under the CadWAF org policy that only permits actions owned by the org.
+# Checkout is a plain git fetch, Go is the runner's preinstalled toolchain, and
+# the release is created with the preinstalled GitHub CLI.
 on:
   push:
     branches: [main]
@@ -23,26 +28,27 @@ jobs:
     # components are private; this keeps the release pipeline from running on a
     # private mirror and matches the project's "public repo only" policy.
     if: ${{ !github.event.repository.private }}
+    env:
+      GH_TOKEN: ${{ github.token }}
     outputs:
       version: ${{ steps.v.outputs.version }}
       release: ${{ steps.v.outputs.release }}
     steps:
-      # Actions are pinned to full-length commit SHAs to satisfy the CadWAF org
-      # policy (only GitHub-owned, SHA-pinned actions are permitted).
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0 # need the full tag history to tell if this version shipped
-
       - name: Read version and check whether it is already tagged
         id: v
         run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
           VERSION="$(sed -n 's/.*Version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' internal/config/config.go | head -n1)"
           if [ -z "$VERSION" ]; then
             echo "::error::Could not read Version from internal/config/config.go"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+          # The tag is checked via the API, so no full tag history is needed.
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${VERSION}" >/dev/null 2>&1; then
             echo "Tag v$VERSION already exists — nothing to release."
             echo "release=false" >> "$GITHUB_OUTPUT"
           else
@@ -50,83 +56,55 @@ jobs:
             echo "release=true" >> "$GITHUB_OUTPUT"
           fi
 
-  build:
-    name: Build ${{ matrix.goarch }}
+  release:
+    name: Build and publish v${{ needs.check.outputs.version }}
     needs: check
     if: ${{ needs.check.outputs.release == 'true' }}
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goarch: [amd64, arm64]
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.check.outputs.version }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version: "1.23"
-          cache-dependency-path: go.sum
+      - name: Check out ${{ github.sha }}
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q FETCH_HEAD
 
       - name: Install BPF build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y clang llvm libbpf-dev "linux-headers-$(uname -r)"
 
-      - name: Generate BPF
-        run: make generate
-
-      - name: Run tests
+      - name: Generate BPF and run tests
         # A release is never published from code that fails its tests, regardless
         # of CI timing on the same commit.
-        run: go test ./... -count=1
-
-      - name: Build binaries
         run: |
-          VERSION="${{ needs.check.outputs.version }}"
+          go version
+          make generate
+          go test ./... -count=1
+
+      - name: Build and package amd64 + arm64
+        run: |
           LDFLAGS="-s -w -X github.com/huzenkon/waf-firewall/internal/config.Version=${VERSION}"
-          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} \
-            go build -buildvcs=false -ldflags "${LDFLAGS}" -o bin/firewalld ./cmd/firewalld
-          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} \
-            go build -buildvcs=false -ldflags "${LDFLAGS}" -o bin/firewallctl ./cmd/firewallctl
-
-      - name: Package release tarball
-        run: |
-          VERSION="${{ needs.check.outputs.version }}"
-          ARCH="${{ matrix.goarch }}"
-          PKG="waf-firewall-${VERSION}-linux-${ARCH}"
-          mkdir -p "${PKG}/configs" "${PKG}/docs"
-          cp bin/firewalld bin/firewallctl "${PKG}/"
-          cp configs/*.example "${PKG}/configs/"
-          cp configs/firewalld.service "${PKG}/configs/"
-          cp docs/API.md "${PKG}/docs/"
-          tar czf "${PKG}.tar.gz" "${PKG}"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: tarball-linux-${{ matrix.goarch }}
-          path: waf-firewall-*.tar.gz
-
-  release:
-    name: Tag and publish v${{ needs.check.outputs.version }}
-    needs: [check, build]
-    if: ${{ needs.check.outputs.release == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          path: artifacts
-          merge-multiple: true
+          for ARCH in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="${ARCH}" \
+              go build -buildvcs=false -ldflags "${LDFLAGS}" -o bin/firewalld ./cmd/firewalld
+            CGO_ENABLED=0 GOOS=linux GOARCH="${ARCH}" \
+              go build -buildvcs=false -ldflags "${LDFLAGS}" -o bin/firewallctl ./cmd/firewallctl
+            PKG="waf-firewall-${VERSION}-linux-${ARCH}"
+            mkdir -p "${PKG}/configs" "${PKG}/docs"
+            cp bin/firewalld bin/firewallctl "${PKG}/"
+            cp configs/*.example "${PKG}/configs/"
+            cp configs/firewalld.service "${PKG}/configs/"
+            cp docs/API.md "${PKG}/docs/"
+            tar czf "${PKG}.tar.gz" "${PKG}"
+          done
 
       - name: Create tag, publish release and upload tarballs
-        # Uses the pre-installed GitHub CLI rather than a third-party action, so
-        # no non-GitHub action needs to be allow-listed in the org. gh creates
-        # the tag at this commit, publishes the release, appends an autogenerated
-        # changelog, and attaches the build artifacts.
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.check.outputs.version }}
+        # gh creates the tag at this commit, publishes the release, appends an
+        # autogenerated changelog, and attaches the build artifacts.
         run: |
           {
             echo '## Install'
@@ -140,7 +118,7 @@ jobs:
             echo
             echo 'Or use `sudo ./scripts/setup-firewall.sh` from a git checkout.'
           } > notes.md
-          gh release create "v${VERSION}" artifacts/*.tar.gz \
+          gh release create "v${VERSION}" waf-firewall-*.tar.gz \
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
             --title "v${VERSION}" \
