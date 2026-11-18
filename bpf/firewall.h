@@ -448,11 +448,30 @@ static __always_inline int match_port_rule(struct fw_rule *rule, __u16 src_port,
 	return 0;
 }
 
-static __always_inline int eval_rules(__u8 direction, __u8 proto, __u16 src_port,
-				      __u16 dst_port, __u8 ip_version,
-				      __u32 src_v4, __u32 dst_v4, __u8 src_v6[16],
-				      __u8 dst_v6[16], __u32 uid, __u32 gid)
+/*
+ * Evaluated in its own bpf-to-bpf frame rather than inlined into the XDP/TC
+ * entry. Inlined, the 64-rule unrolled scan and its per-rule stack copy land in
+ * the caller's frame (~376 bytes), and on the drop path the verifier adds that
+ * to record_drop's frame — 576 bytes combined, past the 512-byte ceiling, so
+ * the program is rejected at load. As its own call the scan's stack is counted
+ * separately and the entry frame stays small. A bpf-to-bpf call takes at most
+ * five arguments, so the eleven scalars are packed into three words plus the
+ * two IPv6 pointers; the __always_inline wrapper below keeps the call sites
+ * unchanged.
+ */
+static __noinline int eval_rules_scan(__u64 meta, __u64 v4, __u64 uidgid,
+				      __u8 *src_v6, __u8 *dst_v6)
 {
+	__u8 direction = (__u8)(meta & 0xff);
+	__u8 proto = (__u8)((meta >> 8) & 0xff);
+	__u8 ip_version = (__u8)((meta >> 16) & 0xff);
+	__u16 src_port = (__u16)((meta >> 24) & 0xffff);
+	__u16 dst_port = (__u16)((meta >> 40) & 0xffff);
+	__u32 src_v4 = (__u32)(v4 & 0xffffffff);
+	__u32 dst_v4 = (__u32)(v4 >> 32);
+	__u32 uid = (__u32)(uidgid & 0xffffffff);
+	__u32 gid = (__u32)(uidgid >> 32);
+
 	__u32 count_key = 0;
 	__u32 *count = bpf_map_lookup_elem(&rule_count, &count_key);
 	if (!count || *count == 0)
@@ -503,6 +522,23 @@ static __always_inline int eval_rules(__u8 direction, __u8 proto, __u16 src_port
 		return rule.action;
 	}
 	return 0;
+}
+
+/*
+ * Thin packer so callers keep the readable eleven-argument signature. Inlined,
+ * it adds only a few ALU ops to the caller; the heavy scan is the call above.
+ */
+static __always_inline int eval_rules(__u8 direction, __u8 proto, __u16 src_port,
+				      __u16 dst_port, __u8 ip_version,
+				      __u32 src_v4, __u32 dst_v4, __u8 src_v6[16],
+				      __u8 dst_v6[16], __u32 uid, __u32 gid)
+{
+	__u64 meta = (__u64)direction | ((__u64)proto << 8) |
+		     ((__u64)ip_version << 16) | ((__u64)src_port << 24) |
+		     ((__u64)dst_port << 40);
+	__u64 v4 = (__u64)src_v4 | ((__u64)dst_v4 << 32);
+	__u64 uidgid = (__u64)uid | ((__u64)gid << 32);
+	return eval_rules_scan(meta, v4, uidgid, src_v6, dst_v6);
 }
 
 #endif /* FIREWALL_H */

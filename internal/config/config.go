@@ -12,7 +12,10 @@ import (
 	"github.com/huzenkon/waf-firewall/internal/ports"
 )
 
-const Version = "0.3.0"
+// Version is the daemon version. Overridden at release build time via
+// -ldflags "-X .../internal/config.Version=<tag>"; the default tracks the
+// source tree between releases.
+var Version = "0.3.0"
 
 type Config struct {
 	ConfigDir  string
