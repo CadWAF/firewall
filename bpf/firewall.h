@@ -84,6 +84,40 @@ struct lpm_key_v6 {
 	__u8 addr[16];
 };
 
+/*
+ * Why a packet was refused.
+ *
+ * Aggregate counters answer "how much" and never "who" or "what for", which
+ * is the only question worth asking after an incident. These travel with the
+ * source address so userspace can say "this address, this many times, for
+ * this reason".
+ */
+enum fw_drop_reason {
+	FW_DROP_NONE = 0,
+	FW_DROP_BLOCKLIST = 1,
+	FW_DROP_RULE = 2,
+	FW_DROP_NO_PORT = 3,
+};
+
+/* Key of one refused source. Ports are deliberately absent: a scan walks
+ * thousands of them and would evict everything else from the map. */
+struct drop_key {
+	__u8 ip_version;
+	__u8 reason;
+	__u8 proto;
+	__u8 _pad;
+	__u32 addr_v4;
+	__u8 addr_v6[16];
+};
+
+struct drop_record {
+	__u64 packets;
+	__u64 first_ns;
+	__u64 last_ns;
+	__u16 last_dst_port;
+	__u16 _pad[3];
+};
+
 struct pkt_stats {
 	__u64 pass;
 	__u64 drop;
@@ -170,6 +204,23 @@ struct {
 	__type(value, struct policy_config);
 } policy SEC(".maps");
 
+/*
+ * Refused sources, aggregated in kernel.
+ *
+ * An LRU hash rather than a ring buffer of events: a flood is millions of
+ * packets a second and userspace could not drain one event per packet without
+ * becoming the bottleneck it is meant to measure. Counting per source turns
+ * that same flood into one entry per attacker, which is the shape the answer
+ * wants anyway. LRU because the eviction policy under pressure should be
+ * "forget the quietest", not "stop recording" or "grow without bound".
+ */
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 16384);
+	__type(key, struct drop_key);
+	__type(value, struct drop_record);
+} drop_log SEC(".maps");
+
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
@@ -190,10 +241,97 @@ static __always_inline void bump_stats(void *map, int pass)
 	struct pkt_stats *st = bpf_map_lookup_elem(map, &key);
 	if (!st)
 		return;
+	/*
+	 * Plain increments, not __sync_fetch_and_add.
+	 *
+	 * These are PERCPU maps: bpf_map_lookup_elem hands back this CPU's own
+	 * copy, which no other CPU can reach, so there is nothing to race
+	 * against. The atomic compiled to a locked read-modify-write on every
+	 * single packet — bus-locking to protect a value only one CPU can
+	 * touch. The read side already sums the per-CPU values.
+	 */
 	if (pass)
-		__sync_fetch_and_add(&st->pass, 1);
+		st->pass++;
 	else
-		__sync_fetch_and_add(&st->drop, 1);
+		st->drop++;
+}
+
+/*
+ * Records one refusal. Called from a single place in the XDP program: inlined
+ * at each of the ten drop sites it would multiply both the instruction count
+ * and the states the verifier has to walk, and this program has already been
+ * over that ceiling once.
+ */
+/*
+ * Packs the small scalars into one argument. A BPF-to-BPF call passes
+ * arguments in registers and takes at most five; the alternative was building
+ * the key in the caller, which is the part that had to move out of it.
+ */
+#define FW_DROP_META(ipver, reason, proto, dport)                          \
+	(((__u64)(ipver)) | ((__u64)(reason) << 8) | ((__u64)(proto) << 16) \
+	 | ((__u64)(dport) << 32))
+
+/*
+ * Records one refusal.
+ *
+ * Deliberately not inlined. Inlined at the drop exit it is verified once for
+ * every state that reaches it, and every branch of a 64-iteration unrolled
+ * rule loop reaches it — which put the program over the verifier's
+ * million-instruction ceiling and stopped it loading at all. As a call it is
+ * checked on its own.
+ */
+static __noinline void record_drop(__u64 meta, __u32 src_v4, __u8 *src_v6)
+{
+	struct drop_key key = {};
+	key.ip_version = (__u8)(meta & 0xff);
+	key.reason = (__u8)((meta >> 8) & 0xff);
+	key.proto = (__u8)((meta >> 16) & 0xff);
+
+	if (key.ip_version == 4)
+		key.addr_v4 = src_v4;
+	else if (src_v6)
+		__builtin_memcpy(key.addr_v6, src_v6, 16);
+
+	__u16 dst_port = (__u16)((meta >> 32) & 0xffff);
+	__u64 now = bpf_ktime_get_ns();
+
+	struct drop_record *rec = bpf_map_lookup_elem(&drop_log, &key);
+	if (rec) {
+		rec->packets++;
+		rec->last_ns = now;
+		rec->last_dst_port = dst_port;
+		return;
+	}
+
+	struct drop_record fresh = {
+		.packets = 1,
+		.first_ns = now,
+		.last_ns = now,
+		.last_dst_port = dst_port,
+	};
+	/* BPF_NOEXIST: another CPU may have inserted the same key between the
+	 * lookup and here, and losing that race should cost this packet's count
+	 * rather than overwrite the other CPU's record. */
+	bpf_map_update_elem(&drop_log, &key, &fresh, BPF_NOEXIST);
+}
+
+/* addr is network-byte-order IPv4. */
+static __always_inline int ip4_is_loopback(__u32 addr)
+{
+	return (bpf_ntohl(addr) & 0xff000000) == 0x7f000000; /* 127.0.0.0/8 */
+}
+
+/* RFC1918 — Docker bridge / compose networks (waf-filter). */
+static __always_inline int ip4_is_private(__u32 addr)
+{
+	__u32 h = bpf_ntohl(addr);
+	if ((h & 0xff000000) == 0x0a000000) /* 10.0.0.0/8 */
+		return 1;
+	if ((h & 0xfff00000) == 0xac100000) /* 172.16.0.0/12 */
+		return 1;
+	if ((h & 0xffff0000) == 0xc0a80000) /* 192.168.0.0/16 */
+		return 1;
+	return 0;
 }
 
 static __always_inline int ip4_in_lpm(void *map, __u32 addr)
@@ -310,11 +448,30 @@ static __always_inline int match_port_rule(struct fw_rule *rule, __u16 src_port,
 	return 0;
 }
 
-static __always_inline int eval_rules(__u8 direction, __u8 proto, __u16 src_port,
-				      __u16 dst_port, __u8 ip_version,
-				      __u32 src_v4, __u32 dst_v4, __u8 src_v6[16],
-				      __u8 dst_v6[16], __u32 uid, __u32 gid)
+/*
+ * Evaluated in its own bpf-to-bpf frame rather than inlined into the XDP/TC
+ * entry. Inlined, the 64-rule unrolled scan and its per-rule stack copy land in
+ * the caller's frame (~376 bytes), and on the drop path the verifier adds that
+ * to record_drop's frame — 576 bytes combined, past the 512-byte ceiling, so
+ * the program is rejected at load. As its own call the scan's stack is counted
+ * separately and the entry frame stays small. A bpf-to-bpf call takes at most
+ * five arguments, so the eleven scalars are packed into three words plus the
+ * two IPv6 pointers; the __always_inline wrapper below keeps the call sites
+ * unchanged.
+ */
+static __noinline int eval_rules_scan(__u64 meta, __u64 v4, __u64 uidgid,
+				      __u8 *src_v6, __u8 *dst_v6)
 {
+	__u8 direction = (__u8)(meta & 0xff);
+	__u8 proto = (__u8)((meta >> 8) & 0xff);
+	__u8 ip_version = (__u8)((meta >> 16) & 0xff);
+	__u16 src_port = (__u16)((meta >> 24) & 0xffff);
+	__u16 dst_port = (__u16)((meta >> 40) & 0xffff);
+	__u32 src_v4 = (__u32)(v4 & 0xffffffff);
+	__u32 dst_v4 = (__u32)(v4 >> 32);
+	__u32 uid = (__u32)(uidgid & 0xffffffff);
+	__u32 gid = (__u32)(uidgid >> 32);
+
 	__u32 count_key = 0;
 	__u32 *count = bpf_map_lookup_elem(&rule_count, &count_key);
 	if (!count || *count == 0)
@@ -332,6 +489,22 @@ static __always_inline int eval_rules(__u8 direction, __u8 proto, __u16 src_port
 		struct fw_rule *rulep = bpf_map_lookup_elem(&rules, &idx);
 		if (!rulep)
 			continue;
+		/*
+		 * The whole rule is copied to the stack before anything is
+		 * read, even though the first check discards most rules.
+		 *
+		 * Screening on the scalar fields first and copying only the
+		 * survivors is the obvious improvement and it does not work:
+		 * reading map-value fields inside this unrolled 64-iteration
+		 * loop multiplies the states the verifier has to explore, and
+		 * it gives up at its million-instruction ceiling. It passes on
+		 * arm64 and fails on x86-64, so a check on the wrong
+		 * architecture proves nothing here.
+		 *
+		 * Making this cheaper means changing the shape of the search —
+		 * indexing rules by protocol and port so the loop is short —
+		 * not shaving the body of a linear scan over all 64.
+		 */
 		struct fw_rule rule;
 		__builtin_memcpy(&rule, rulep, sizeof(rule));
 		if (rule.direction != direction)
@@ -349,6 +522,23 @@ static __always_inline int eval_rules(__u8 direction, __u8 proto, __u16 src_port
 		return rule.action;
 	}
 	return 0;
+}
+
+/*
+ * Thin packer so callers keep the readable eleven-argument signature. Inlined,
+ * it adds only a few ALU ops to the caller; the heavy scan is the call above.
+ */
+static __always_inline int eval_rules(__u8 direction, __u8 proto, __u16 src_port,
+				      __u16 dst_port, __u8 ip_version,
+				      __u32 src_v4, __u32 dst_v4, __u8 src_v6[16],
+				      __u8 dst_v6[16], __u32 uid, __u32 gid)
+{
+	__u64 meta = (__u64)direction | ((__u64)proto << 8) |
+		     ((__u64)ip_version << 16) | ((__u64)src_port << 24) |
+		     ((__u64)dst_port << 40);
+	__u64 v4 = (__u64)src_v4 | ((__u64)dst_v4 << 32);
+	__u64 uidgid = (__u64)uid | ((__u64)gid << 32);
+	return eval_rules_scan(meta, v4, uidgid, src_v6, dst_v6);
 }
 
 #endif /* FIREWALL_H */

@@ -1,10 +1,14 @@
 name: CI
 
+# dev is the integration branch: every push to it, and every pull request
+# toward dev or main, runs the test suite. Pushes to main are handled by the
+# release workflow (which runs the same tests before it publishes), so main is
+# intentionally not listed under push here.
 on:
   push:
     branches: [dev]
   pull_request:
-    branches: [dev]
+    branches: [dev, main]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -14,6 +18,10 @@ jobs:
   test:
     name: bpf2go build and unit tests
     runs-on: ubuntu-latest
+    # Run CI only while the repository is public. The other CadWAF components
+    # are private; this keeps Actions minutes from being spent on a private
+    # mirror and matches the project's "public repo only" policy.
+    if: ${{ !github.event.repository.private }}
     steps:
       - uses: actions/checkout@v4
 

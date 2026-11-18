@@ -2,6 +2,7 @@ package ctl
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -45,11 +46,29 @@ func Reactivate(cfg *config.Config) error {
 }
 
 func HooksOff(cfg *config.Config) error {
+	// XDP is attached via bpf_link held by the firewalld process
+	// (link.AttachXDP). netlink "ip link set xdp off" does NOT drop that
+	// link while the daemon is alive — hooks-off would appear to succeed
+	// while filtering stays active. Stop the service first so Close()
+	// releases the bpf_link (same reason emergency-recover works and
+	// bare hooks-off did not).
+	active, err := isServiceActive()
+	if err == nil && active {
+		fmt.Fprintln(os.Stderr, "hooks-off: firewalld holds bpf_link — stopping service to release XDP/TC")
+		if stopErr := runSystemctl("stop"); stopErr != nil {
+			return fmt.Errorf("hooks-off: stop firewalld: %w", stopErr)
+		}
+	}
+
 	iface, err := cfg.ResolveIface()
 	if err != nil {
 		return err
 	}
-	return hooks.Detach(iface)
+	if err := hooks.Detach(iface); err != nil {
+		// Keep going — also clean Docker bridge leftovers below.
+		fmt.Fprintf(os.Stderr, "hooks-off: %v\n", err)
+	}
+	return hooks.DetachVirtualLeftovers()
 }
 
 func Status(cfg *config.Config) (StatusInfo, error) {

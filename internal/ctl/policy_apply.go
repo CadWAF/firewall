@@ -62,8 +62,8 @@ func fetchDaemonCounts(cfg *config.Config) (policy.Counts, error) {
 }
 
 type daemonHealth struct {
-	Policy policy.Counts  `json:"policy"`
-	Stats  *PacketStats   `json:"stats"`
+	Policy policy.Counts `json:"policy"`
+	Stats  *PacketStats  `json:"stats"`
 }
 
 func fetchDaemonHealth(cfg *config.Config) (*daemonHealth, error) {

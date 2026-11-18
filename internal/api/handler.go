@@ -11,6 +11,7 @@ import (
 	"github.com/huzenkon/waf-firewall/internal/config"
 	"github.com/huzenkon/waf-firewall/internal/engine"
 	"github.com/huzenkon/waf-firewall/internal/parser"
+	"github.com/huzenkon/waf-firewall/internal/policy"
 )
 
 type Handler struct {
@@ -46,6 +47,8 @@ func Register(r chi.Router, h *Handler) {
 
 		r.Post("/api/v1/reload", h.reload)
 		r.Get("/api/v1/stats", h.stats)
+
+		r.Get("/api/v1/drops", h.listDrops)
 	})
 }
 
@@ -150,20 +153,20 @@ func (h *Handler) getPorts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{
-		"tcp_in":           st.Ports.TCPIn,
-		"udp_in":           st.Ports.UDPIn,
-		"tcp_out":          st.Ports.TCPOut,
-		"udp_out":          st.Ports.UDPOut,
-		"allow_localhost":  st.Ports.AllowLocalhost,
+		"tcp_in":          st.Ports.TCPIn,
+		"udp_in":          st.Ports.UDPIn,
+		"tcp_out":         st.Ports.TCPOut,
+		"udp_out":         st.Ports.UDPOut,
+		"allow_localhost": st.Ports.AllowLocalhost,
 	})
 }
 
 type portsRequest struct {
-	TCPIn          []uint16 `json:"tcp_in"`
-	UDPIn          []uint16 `json:"udp_in"`
-	TCPOut         []uint16 `json:"tcp_out"`
-	UDPOut         []uint16 `json:"udp_out"`
-	AllowLocalhost *bool    `json:"allow_localhost"`
+	TCPIn          *[]uint16 `json:"tcp_in"`
+	UDPIn          *[]uint16 `json:"udp_in"`
+	TCPOut         *[]uint16 `json:"tcp_out"`
+	UDPOut         *[]uint16 `json:"udp_out"`
+	AllowLocalhost *bool     `json:"allow_localhost"`
 }
 
 func (h *Handler) putPorts(w http.ResponseWriter, r *http.Request) {
@@ -177,12 +180,25 @@ func (h *Handler) putPorts(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
 		return
 	}
-	pc.TCPIn = req.TCPIn
-	pc.UDPIn = req.UDPIn
-	pc.TCPOut = req.TCPOut
-	pc.UDPOut = req.UDPOut
+	if req.TCPIn != nil {
+		pc.TCPIn = *req.TCPIn
+	}
+	if req.UDPIn != nil {
+		pc.UDPIn = *req.UDPIn
+	}
+	if req.TCPOut != nil {
+		pc.TCPOut = *req.TCPOut
+	}
+	if req.UDPOut != nil {
+		pc.UDPOut = *req.UDPOut
+	}
 	if req.AllowLocalhost != nil {
 		pc.AllowLocalhost = *req.AllowLocalhost
+	}
+	policy.EnsureSafePorts(pc)
+	if err := policy.ValidateSSHReachable(h.Cfg.AllowPath(), pc); err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
 	}
 	if err := config.SavePorts(h.Cfg.PortsPath(), pc); err != nil {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)

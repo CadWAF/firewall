@@ -12,6 +12,23 @@ import (
 	"github.com/cilium/ebpf"
 )
 
+type FirewallDropKey struct {
+	IpVersion uint8
+	Reason    uint8
+	Proto     uint8
+	Pad       uint8
+	AddrV4    uint32
+	AddrV6    [16]uint8
+}
+
+type FirewallDropRecord struct {
+	Packets     uint64
+	FirstNs     uint64
+	LastNs      uint64
+	LastDstPort uint16
+	Pad         [3]uint16
+}
+
 type FirewallFwRule struct {
 	Proto       uint8
 	Direction   uint8
@@ -103,6 +120,7 @@ type FirewallProgramSpecs struct {
 type FirewallMapSpecs struct {
 	BlocklistV4 *ebpf.MapSpec `ebpf:"blocklist_v4"`
 	BlocklistV6 *ebpf.MapSpec `ebpf:"blocklist_v6"`
+	DropLog     *ebpf.MapSpec `ebpf:"drop_log"`
 	Policy      *ebpf.MapSpec `ebpf:"policy"`
 	RuleCount   *ebpf.MapSpec `ebpf:"rule_count"`
 	Rules       *ebpf.MapSpec `ebpf:"rules"`
@@ -144,6 +162,7 @@ func (o *FirewallObjects) Close() error {
 type FirewallMaps struct {
 	BlocklistV4 *ebpf.Map `ebpf:"blocklist_v4"`
 	BlocklistV6 *ebpf.Map `ebpf:"blocklist_v6"`
+	DropLog     *ebpf.Map `ebpf:"drop_log"`
 	Policy      *ebpf.Map `ebpf:"policy"`
 	RuleCount   *ebpf.Map `ebpf:"rule_count"`
 	Rules       *ebpf.Map `ebpf:"rules"`
@@ -161,6 +180,7 @@ func (m *FirewallMaps) Close() error {
 	return _FirewallClose(
 		m.BlocklistV4,
 		m.BlocklistV6,
+		m.DropLog,
 		m.Policy,
 		m.RuleCount,
 		m.Rules,

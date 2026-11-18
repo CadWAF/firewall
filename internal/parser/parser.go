@@ -149,11 +149,11 @@ func parseComplexRule(line string, defaultAction Action) (Entry, error) {
 	}
 
 	e := Entry{
-		Kind:      EntryComplexRule,
-		Raw:       line,
-		Action:    defaultAction,
-		PortSpec:  PortNone,
-		IPSpec:    IPNone,
+		Kind:       EntryComplexRule,
+		Raw:        line,
+		Action:     defaultAction,
+		PortSpec:   PortNone,
+		IPSpec:     IPNone,
 		UIDGIDType: UIDGIDNone,
 	}
 

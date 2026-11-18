@@ -62,6 +62,7 @@ int xdp_firewall(struct xdp_md *ctx)
 	__u8 src_v6[16] = {}, dst_v6[16] = {};
 	__u16 src_port = 0, dst_port = 0;
 	void *l4_ptr = 0;
+	__u8 drop_reason = FW_DROP_NONE;
 
 	if (h_proto == ETH_P_IP) {
 		struct iphdr *ip = l3;
@@ -89,15 +90,61 @@ int xdp_firewall(struct xdp_md *ctx)
 		return XDP_PASS;
 	}
 
+	/*
+	 * DHCP lease renewal reply (server:67 -> client:68) must never be
+	 * policy-gated. There is no conntrack here, so unlike an established
+	 * TCP ACK, a DHCPACK/DHCPOFFER looks exactly like any other
+	 * unsolicited inbound UDP packet and falls to the default drop
+	 * unless the operator happened to whitelist the DHCP server IP or
+	 * put port 67 in udp_in — neither of which anyone does. If it gets
+	 * dropped, the DHCP client never sees the reply, keeps retrying
+	 * until the lease's hard expiry, then tears down the host's own
+	 * address/default route. From outside that is indistinguishable
+	 * from "the firewall dropped everything", and it does not self-heal
+	 * (a new DISCOVER's OFFER gets dropped too) — this is the exact
+	 * failure this project's own diagnostic logging was built to catch
+	 * ("firewalld.env.example: troubleshooting 24h outages"): the DHCP
+	 * lease timer, not anything in the reload/refresh path.
+	 */
+	if (ip_version == 4 && proto == IPPROTO_UDP && src_port == 67 && dst_port == 68) {
+		bump_stats(&xdp_stats, 1);
+		return XDP_PASS;
+	}
+
+	/*
+	 * DNS reply (resolver:53 -> our ephemeral port). Same shape of bug as
+	 * the DHCP case above: the query leaves fine under udp_out, but with no
+	 * conntrack the reply is just unsolicited inbound UDP, so it is dropped
+	 * unless the operator thought to list 53 in udp_in. The symptom is not
+	 * "the firewall blocked DNS" — it is every outbound name lookup on the
+	 * host timing out, which reads as a broken network (docker builds,
+	 * package installs, ACME, and webhook calls all fail at once).
+	 *
+	 * Restricted to replies landing on an ephemeral port: a resolver's
+	 * answer always does, while a service listening below 1024 must still
+	 * be opened explicitly via udp_in. That is strictly tighter than the
+	 * udp_in=53 workaround it replaces, which allowed any destination port.
+	 */
+	if (proto == IPPROTO_UDP && src_port == 53 && dst_port >= 1024) {
+		bump_stats(&xdp_stats, 1);
+		return XDP_PASS;
+	}
+
 	__u32 policy_key = 0;
 	struct policy_config *pol = bpf_map_lookup_elem(&policy, &policy_key);
 
 	if (pol && pol->allow_localhost) {
-		if (ip_version == 4 && (src_v4 == bpf_htonl(0x7f000001) ||
-					dst_v4 == bpf_htonl(0x7f000001))) {
+		if (ip_version == 4 && (ip4_is_loopback(src_v4) ||
+					ip4_is_loopback(dst_v4))) {
 			bump_stats(&xdp_stats, 1);
 			return XDP_PASS;
 		}
+	}
+
+	/* Never blackhole Docker / compose mesh if XDP was mis-attached to a bridge. */
+	if (ip_version == 4 && ip4_is_private(src_v4) && ip4_is_private(dst_v4)) {
+		bump_stats(&xdp_stats, 1);
+		return XDP_PASS;
 	}
 
 	if (ip_version == 4) {
@@ -108,8 +155,8 @@ int xdp_firewall(struct xdp_md *ctx)
 		}
 		if (ip4_in_lpm(&blocklist_v4, src_v4) ||
 		    ip4_in_lpm(&blocklist_v4, dst_v4)) {
-			bump_stats(&xdp_stats, 0);
-			return XDP_DROP;
+			drop_reason = FW_DROP_BLOCKLIST;
+			goto drop;
 		}
 	} else if (ip_version == 6) {
 		if (ip6_in_lpm(&whitelist_v6, src_v6) ||
@@ -119,8 +166,8 @@ int xdp_firewall(struct xdp_md *ctx)
 		}
 		if (ip6_in_lpm(&blocklist_v6, src_v6) ||
 		    ip6_in_lpm(&blocklist_v6, dst_v6)) {
-			bump_stats(&xdp_stats, 0);
-			return XDP_DROP;
+			drop_reason = FW_DROP_BLOCKLIST;
+			goto drop;
 		}
 	}
 
@@ -140,8 +187,8 @@ int xdp_firewall(struct xdp_md *ctx)
 		return XDP_PASS;
 	}
 	if (rule_action == FW_ACTION_DROP) {
-		bump_stats(&xdp_stats, 0);
-		return XDP_DROP;
+		drop_reason = FW_DROP_RULE;
+		goto drop;
 	}
 
 	/* Established TCP (ACK) and UDP replies from allowed service ports. */
@@ -167,6 +214,14 @@ int xdp_firewall(struct xdp_md *ctx)
 		return XDP_PASS;
 	}
 
+	drop_reason = FW_DROP_NO_PORT;
+
+drop:
+	/* The one place a refused packet leaves the program. Every branch above
+	 * arrives here with the reason it decided on, so the recording exists
+	 * once rather than at each site. */
+	record_drop(FW_DROP_META(ip_version, drop_reason, proto, dst_port),
+		    src_v4, src_v6);
 	bump_stats(&xdp_stats, 0);
 	return XDP_DROP;
 }
@@ -273,11 +328,17 @@ int tc_egress(struct __sk_buff *skb)
 	struct policy_config *pol = bpf_map_lookup_elem(&policy, &policy_key);
 
 	if (pol && pol->allow_localhost) {
-		if (ip_version == 4 && (src_v4 == bpf_htonl(0x7f000001) ||
-					dst_v4 == bpf_htonl(0x7f000001))) {
+		if (ip_version == 4 && (ip4_is_loopback(src_v4) ||
+					ip4_is_loopback(dst_v4))) {
 			bump_stats(&tc_stats, 1);
 			return TC_ACT_OK;
 		}
+	}
+
+	/* Docker bridge / overlay mesh must not be shot by TC on a mis-bound iface. */
+	if (ip_version == 4 && ip4_is_private(src_v4) && ip4_is_private(dst_v4)) {
+		bump_stats(&tc_stats, 1);
+		return TC_ACT_OK;
 	}
 
 	if (ip_version == 4) {

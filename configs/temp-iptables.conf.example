@@ -1,0 +1,24 @@
+# Temporary host firewall (iptables). Copy to /etc/firewall/temp-iptables.conf
+# or pass: ./temp-iptables.sh -c /path/to/conf apply
+
+# WAN interface (empty = auto from default route)
+WAN_IF=
+
+# TCP/UDP ports open to the world (comma-separated). SSH is NOT public by default.
+OPEN_TCP=80,443
+OPEN_UDP=
+
+# IPs with full access to every port (SSH, 8080, MySQL publish, …)
+# Comma-separated. Always add your current admin IP before apply.
+ALLOW_ALL=127.0.0.1
+
+# Per-IP port lists: IP:port[,port...]
+# Space- or comma-separated entries.
+# Example: ALLOW_PORTS=203.0.113.10:22 198.51.100.20:22,8080
+ALLOW_PORTS=
+
+# Also filter Docker-published ports on WAN (recommended = 1)
+DOCKER_FILTER=1
+
+# Seconds to wait after apply; if you disconnect, rules auto-flush (0 = disable)
+SAFETY_SECONDS=30

@@ -4,30 +4,45 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/huzenkon/waf-firewall/internal/ports"
 )
 
-const Version = "0.1.0"
+// Version is the daemon version. Overridden at release build time via
+// -ldflags "-X .../internal/config.Version=<tag>"; the default tracks the
+// source tree between releases.
+var Version = "0.3.0"
 
 type Config struct {
 	ConfigDir  string
 	ListenAddr string
 	APIKey     string
 	Iface      string
+
+	// Where refused sources are kept. Empty disables recording entirely: on a
+	// node with no disk to spare, counting is still useful and the file is not.
+	DropLogPath string
+
+	// How long a refused source stays on record after it goes quiet.
+	DropRetention time.Duration
 }
+
+// DropLogEnabled reports whether refusals are written to disk.
+func (c *Config) DropLogEnabled() bool { return c.DropLogPath != "" }
 
 func Load() (*Config, error) {
 	LoadEnvFile(DefaultEnvPath())
 	cfg := &Config{
-		ConfigDir:  envOr("FIREWALL_CONFIG_DIR", "/etc/firewall"),
-		ListenAddr: envOr("FIREWALL_LISTEN_ADDR", "127.0.0.1:9090"),
-		APIKey:     os.Getenv("FIREWALL_API_TOKEN"),
-		Iface:      os.Getenv("FIREWALL_IFACE"),
+		ConfigDir:     envOr("FIREWALL_CONFIG_DIR", "/etc/firewall"),
+		ListenAddr:    envOr("FIREWALL_LISTEN_ADDR", "127.0.0.1:9090"),
+		APIKey:        os.Getenv("FIREWALL_API_TOKEN"),
+		Iface:         os.Getenv("FIREWALL_IFACE"),
+		DropLogPath:   dropLogPath(),
+		DropRetention: dropRetention(),
 	}
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("FIREWALL_API_TOKEN is required")
@@ -43,10 +58,12 @@ func DefaultEnvPath() string {
 func LoadCLI() (*Config, error) {
 	LoadEnvFile(DefaultEnvPath())
 	return &Config{
-		ConfigDir:  envOr("FIREWALL_CONFIG_DIR", "/etc/firewall"),
-		ListenAddr: envOr("FIREWALL_LISTEN_ADDR", "127.0.0.1:9090"),
-		APIKey:     os.Getenv("FIREWALL_API_TOKEN"),
-		Iface:      os.Getenv("FIREWALL_IFACE"),
+		ConfigDir:     envOr("FIREWALL_CONFIG_DIR", "/etc/firewall"),
+		ListenAddr:    envOr("FIREWALL_LISTEN_ADDR", "127.0.0.1:9090"),
+		APIKey:        os.Getenv("FIREWALL_API_TOKEN"),
+		Iface:         os.Getenv("FIREWALL_IFACE"),
+		DropLogPath:   dropLogPath(),
+		DropRetention: dropRetention(),
 	}, nil
 }
 
@@ -72,31 +89,6 @@ func LoadEnvFile(path string) {
 	}
 }
 
-func (c *Config) ResolveIface() (string, error) {
-	if c.Iface != "" {
-		return c.Iface, nil
-	}
-	iface, err := defaultRouteIface()
-	if err != nil {
-		return "", err
-	}
-	return iface, nil
-}
-
-func defaultRouteIface() (string, error) {
-	out, err := exec.Command("ip", "route", "show", "default").Output()
-	if err != nil {
-		return "", fmt.Errorf("detect default interface: %w", err)
-	}
-	fields := strings.Fields(string(out))
-	for i, f := range fields {
-		if f == "dev" && i+1 < len(fields) {
-			return fields[i+1], nil
-		}
-	}
-	return "", fmt.Errorf("could not detect default interface")
-}
-
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -104,9 +96,9 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func (c *Config) AllowPath() string  { return filepath.Join(c.ConfigDir, "firewall.allow") }
-func (c *Config) DenyPath() string   { return filepath.Join(c.ConfigDir, "firewall.deny") }
-func (c *Config) PortsPath() string  { return filepath.Join(c.ConfigDir, "ports.conf") }
+func (c *Config) AllowPath() string { return filepath.Join(c.ConfigDir, "firewall.allow") }
+func (c *Config) DenyPath() string  { return filepath.Join(c.ConfigDir, "firewall.deny") }
+func (c *Config) PortsPath() string { return filepath.Join(c.ConfigDir, "ports.conf") }
 
 type PortsConfig struct {
 	TCPIn          []uint16
@@ -166,4 +158,30 @@ func SavePorts(path string, pc *PortsConfig) error {
 	fmt.Fprintf(&b, "\n# Always allow loopback traffic\n")
 	fmt.Fprintf(&b, "allow_localhost = %t\n", pc.AllowLocalhost)
 	return os.WriteFile(path, []byte(b.String()), 0644)
+}
+
+// dropLogPath defaults to a file beside the other firewall state. Set
+// FIREWALL_DROP_LOG=off to turn recording off.
+func dropLogPath() string {
+	v := strings.TrimSpace(os.Getenv("FIREWALL_DROP_LOG"))
+	switch strings.ToLower(v) {
+	case "off", "false", "0", "none":
+		return ""
+	case "":
+		return "/var/lib/firewall/drops.sqlite"
+	default:
+		return v
+	}
+}
+
+func dropRetention() time.Duration {
+	v := strings.TrimSpace(os.Getenv("FIREWALL_DROP_RETENTION"))
+	if v == "" {
+		return 14 * 24 * time.Hour
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		return 14 * 24 * time.Hour
+	}
+	return d
 }
