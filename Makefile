@@ -8,10 +8,17 @@ CLANG ?= clang
 LLC ?= llc
 ARCH := $(shell uname -m | sed 's/x86_64/x86/' | sed 's/aarch64/arm64/')
 
+# Recompile the BPF object from bpf/*.c. Needs clang/llvm. Run this (and commit
+# internal/bpf/firewall_bpfel.o) whenever the BPF source changes — it is NOT a
+# prerequisite of `build`, so that a host without a compiler can still rebuild
+# firewalld from the committed, already-compiled object.
 generate:
 	go generate ./$(INTERNAL_BPF)/...
 
-build: generate
+# Build the daemons. The BPF object is embedded via //go:embed from the
+# committed internal/bpf/firewall_bpfel.o, so this needs only the Go toolchain —
+# no clang. To rebuild the object from source first, run `make generate build`.
+build:
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(shell go env GOARCH) go build -buildvcs=false -o bin/firewalld ./cmd/firewalld
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(shell go env GOARCH) go build -buildvcs=false -o bin/firewallctl ./cmd/firewallctl
 

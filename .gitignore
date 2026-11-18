@@ -1,4 +1,10 @@
 bin/
 *.o
+# The compiled BPF object is the program the kernel actually runs. It is
+# committed (not ignored) so it travels with every `git pull`: a host can then
+# rebuild firewalld with a plain `go build` — the object is embedded via
+# //go:embed — without needing clang/llvm. Regenerate it with `make generate`
+# whenever bpf/*.c or bpf/*.h changes, and commit the result.
+!internal/bpf/firewall_bpfel.o
 dist/
 .DS_Store

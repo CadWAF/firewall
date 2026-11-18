@@ -110,9 +110,19 @@ SSH address, and enables the systemd unit.
 
 ```bash
 cd firewall
-make generate   # bpf2go — requires clang with the bpf target
-make build      # produces bin/firewalld and bin/firewallctl
+make build      # produces bin/firewalld and bin/firewallctl — Go only, no clang
 sudo make install
+```
+
+The compiled BPF object (`internal/bpf/firewall_bpfel.o`) is **committed to the
+repository** and embedded into the binary at `go build` time, so building —
+including on an updated checkout after `git pull` — needs only the Go toolchain.
+`clang`/`llvm` are required **only** to recompile that object from `bpf/*.c`,
+which you do when you change the BPF source:
+
+```bash
+make generate   # bpf2go — requires clang with the bpf target; commit the .o it writes
+make build
 ```
 
 ---
@@ -252,9 +262,12 @@ cd firewall
 go test ./...      # or: make test
 ```
 
-Unit tests cover rule parsing, policy loading and IPv4 BPF key layout. BPF code
-generation needs clang with the `bpfel` target; on macOS (build only, no
-runtime): `brew install llvm`.
+Unit tests cover rule parsing, policy loading and IPv4 BPF key layout. The
+compiled BPF object is committed, so `go build` / `make build` need no clang;
+regenerating it (`make generate`) needs clang with the `bpfel` target — on
+macOS: `brew install llvm`. Whenever you change `bpf/*.c` or `bpf/*.h`, run
+`make generate` and **commit the updated `internal/bpf/firewall_bpfel.o`** so
+the fix ships with the next `git pull`.
 
 ---
 
