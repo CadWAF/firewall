@@ -274,11 +274,10 @@ static __always_inline void bump_stats(void *map, int pass)
 /*
  * Records one refusal.
  *
- * Deliberately not inlined. Inlined at the drop exit it is verified once for
- * every state that reaches it, and every branch of a 64-iteration unrolled
- * rule loop reaches it — which put the program over the verifier's
- * million-instruction ceiling and stopped it loading at all. As a call it is
- * checked on its own.
+ * Deliberately not inlined. Inlined at each drop exit it is verified once for
+ * every state that reaches it, inflating both the instruction count and the
+ * number of states the verifier must walk. As a single out-of-line call it is
+ * checked once.
  */
 static __noinline void record_drop(__u64 meta, __u32 src_v4, __u8 *src_v6)
 {
@@ -450,7 +449,7 @@ static __always_inline int match_port_rule(struct fw_rule *rule, __u16 src_port,
 
 /*
  * Evaluated in its own bpf-to-bpf frame rather than inlined into the XDP/TC
- * entry. Inlined, the 64-rule unrolled scan and its per-rule stack copy land in
+ * entry. Inlined, the 64-rule scan and its per-rule stack copy land in
  * the caller's frame (~376 bytes), and on the drop path the verifier adds that
  * to record_drop's frame — 576 bytes combined, past the 512-byte ceiling, so
  * the program is rejected at load. As its own call the scan's stack is counted
@@ -481,7 +480,18 @@ static __noinline int eval_rules_scan(__u64 meta, __u64 v4, __u64 uidgid,
 	if (max > BPF_EVAL_RULE_LIMIT)
 		max = BPF_EVAL_RULE_LIMIT;
 
-#pragma unroll
+	/*
+	 * NOT unrolled — this is the fix for "BPF program is too large.
+	 * Processed 1000001 insn". Fully unrolling this 64-iteration scan emits
+	 * 64 copies of the body, each with the nested port/IP matches and several
+	 * branches; the verifier walks every path through all of them and exceeds
+	 * its million-instruction complexity ceiling, so the program is rejected
+	 * at load and firewalld never comes up. As a real bounded loop the body is
+	 * verified once and the induction variable is tracked, which keeps the
+	 * processed-instruction count far below the ceiling. Bounded loops are
+	 * supported since kernel 5.3; this project requires >= 5.10.
+	 */
+#pragma clang loop unroll(disable)
 	for (int i = 0; i < BPF_EVAL_RULE_LIMIT; i++) {
 		if ((__u32)i >= max)
 			break;
@@ -490,20 +500,11 @@ static __noinline int eval_rules_scan(__u64 meta, __u64 v4, __u64 uidgid,
 		if (!rulep)
 			continue;
 		/*
-		 * The whole rule is copied to the stack before anything is
-		 * read, even though the first check discards most rules.
-		 *
-		 * Screening on the scalar fields first and copying only the
-		 * survivors is the obvious improvement and it does not work:
-		 * reading map-value fields inside this unrolled 64-iteration
-		 * loop multiplies the states the verifier has to explore, and
-		 * it gives up at its million-instruction ceiling. It passes on
-		 * arm64 and fails on x86-64, so a check on the wrong
-		 * architecture proves nothing here.
-		 *
-		 * Making this cheaper means changing the shape of the search —
-		 * indexing rules by protocol and port so the loop is short —
-		 * not shaving the body of a linear scan over all 64.
+		 * The whole rule is copied to the stack before any field is
+		 * read. With the scan no longer unrolled the body is verified
+		 * once, so the copy is cheap. If 64 linear rules is ever too
+		 * few, the real scaling win is to index rules by protocol and
+		 * port so the loop is short — not to shave this body.
 		 */
 		struct fw_rule rule;
 		__builtin_memcpy(&rule, rulep, sizeof(rule));
